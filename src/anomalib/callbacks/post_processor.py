@@ -78,9 +78,11 @@ class _PostProcessorCallback(Callback):
         outputs: dict[str, Any],
     ) -> None:
         if "pred_scores" in outputs:
-            outputs["pred_labels"] = outputs["pred_scores"] >= pl_module.image_threshold.value
+            pred_scores = outputs["pred_scores"]
+            outputs["pred_labels"] = pred_scores >= pl_module.image_threshold.value.to(pred_scores.device)
         if "anomaly_maps" in outputs:
-            outputs["pred_masks"] = outputs["anomaly_maps"] >= pl_module.pixel_threshold.value
+            anomaly_maps = outputs["anomaly_maps"]
+            outputs["pred_masks"] = anomaly_maps >= pl_module.pixel_threshold.value.to(anomaly_maps.device)
             if "pred_boxes" not in outputs:
                 outputs["pred_boxes"], outputs["box_scores"] = masks_to_boxes(
                     outputs["pred_masks"],
