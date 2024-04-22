@@ -6,5 +6,6 @@
 from .base import BaseThreshold
 from .f1_adaptive_threshold import F1AdaptiveThreshold
 from .manual_threshold import ManualThreshold
+from .wrapper import WrapperThreshold
 
-__all__ = ["BaseThreshold", "F1AdaptiveThreshold", "ManualThreshold"]
+__all__ = ["BaseThreshold", "F1AdaptiveThreshold", "ManualThreshold", "WrapperThreshold"]
