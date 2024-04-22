@@ -26,6 +26,7 @@ from .image import (
     Ganomaly,
     Padim,
     Patchcore,
+    PatchDist,
     ReverseDistillation,
     Rkde,
     Stfpm,

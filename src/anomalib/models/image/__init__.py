@@ -15,6 +15,7 @@ from .fastflow import Fastflow
 from .ganomaly import Ganomaly
 from .padim import Padim
 from .patchcore import Patchcore
+from .patchdist import PatchDist
 from .reverse_distillation import ReverseDistillation
 from .rkde import Rkde
 from .stfpm import Stfpm
@@ -34,6 +35,7 @@ __all__ = [
     "Ganomaly",
     "Padim",
     "Patchcore",
+    "PatchDist",
     "ReverseDistillation",
     "Rkde",
     "Stfpm",
