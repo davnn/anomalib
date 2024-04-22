@@ -10,9 +10,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F  # noqa: N812
 
-from anomalib.models.components import DynamicBufferMixin, KCenterGreedy, TimmFeatureExtractor
-
-from .anomaly_map import AnomalyMapGenerator
+from anomalib.models.components import DynamicBufferMixin, KCenterGreedy, TimmFeatureExtractor, AnomalyMapGenerator
 
 if TYPE_CHECKING:
     from anomalib.data.utils.tiler import Tiler
@@ -33,11 +31,11 @@ class PatchcoreModel(DynamicBufferMixin, nn.Module):
     """
 
     def __init__(
-        self,
-        layers: Sequence[str],
-        backbone: str = "wide_resnet50_2",
-        pre_trained: bool = True,
-        num_neighbors: int = 9,
+            self,
+            layers: Sequence[str],
+            backbone: str = "wide_resnet50_2",
+            pre_trained: bool = True,
+            num_neighbors: int = 9,
     ) -> None:
         super().__init__()
         self.tiler: Tiler | None = None
@@ -191,10 +189,10 @@ class PatchcoreModel(DynamicBufferMixin, nn.Module):
         return patch_scores, locations
 
     def compute_anomaly_score(
-        self,
-        patch_scores: torch.Tensor,
-        locations: torch.Tensor,
-        embedding: torch.Tensor,
+            self,
+            patch_scores: torch.Tensor,
+            locations: torch.Tensor,
+            embedding: torch.Tensor,
     ) -> torch.Tensor:
         """Compute Image-Level Anomaly Score.
 
