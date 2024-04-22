@@ -8,7 +8,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F  # noqa: N812
 
-from anomalib.models.components import GaussianBlur2d
+from .blur import GaussianBlur2d
 
 
 class AnomalyMapGenerator(nn.Module):
