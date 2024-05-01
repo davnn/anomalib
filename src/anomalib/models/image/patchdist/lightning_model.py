@@ -33,21 +33,19 @@ class PatchDist(MemoryBankMixin, AnomalyModule):
     """
 
     def __init__(
-            self,
-            input_size: tuple[int, int] = (224, 224),
-            backbone: str = "wide_resnet50_2",
-            layer: str = "layer2",
-            pre_trained: bool = True,
-            index: NearestNeighbors = PatchDistDefaultIndex,
-            detector: KNNDetector = PatchDistDefaultDetector,
-            score_distribution: DistanceDistribution | None = None,
-            score_quantile: float = 0.99,
-            fit_index_on_train_start: bool = False,
-            add_index_on_train_step: bool = False,
-            fit_model_on_train_end: bool = True,
-            coreset_sampling_ratio: float | tuple[float | None, float | None, float | None] | None = (None, 0.1, None),
-            coreset_sampling_type: Literal["random", "kcenter", "kmedoids"] = "kcenter",
-            coreset_sampling_device: Literal["initial", "cpu", "auto"] = "auto"
+        self,
+        input_size: tuple[int, int] = (224, 224),
+        backbone: str = "wide_resnet50_2",
+        layer: str = "layer2",
+        pre_trained: bool = True,
+        index: NearestNeighbors = PatchDistDefaultIndex,
+        detector: KNNDetector = PatchDistDefaultDetector,
+        score_distribution: DistanceDistribution | None = None,
+        score_quantile: float = 0.99,
+        incremental_indexing: bool = False,
+        coreset_sampling_ratio: float | tuple[float | None, float | None, float | None] | None = (None, 0.1, None),
+        coreset_sampling_type: Literal["random", "kcenter", "kmedoids"] = "kcenter",
+        coreset_sampling_device: Literal["initial", "cpu", "auto"] = "initial"
     ) -> None:
         super().__init__()
 
@@ -59,9 +57,7 @@ class PatchDist(MemoryBankMixin, AnomalyModule):
         # initial = use the lightning device for all sampling
         # cpu = use cpu for all sampling
         self.coreset_sampling_device = coreset_sampling_device
-        self.fit_index_on_train_start = fit_index_on_train_start
-        self.fit_model_on_train_end = fit_model_on_train_end
-        self.add_index_on_train_step = add_index_on_train_step
+        self.incremental_indexing = incremental_indexing
         self.model: PatchDistModel = PatchDistModel(
             input_size=input_size,
             layer=layer,
@@ -75,8 +71,8 @@ class PatchDist(MemoryBankMixin, AnomalyModule):
         self.embeddings: list[torch.Tensor] = []
 
     def get_coreset_sampling_device(
-            self,
-            step: Literal["start", "step", "end"]
+        self,
+        step: Literal["start", "step", "end"]
     ) -> torch.device | str:
         if self.coreset_sampling_device == "auto":
             if step == "end":
@@ -91,7 +87,7 @@ class PatchDist(MemoryBankMixin, AnomalyModule):
 
     @staticmethod
     def get_coreset_sampling_ratio(
-            input: float | None | tuple[float | None, float | None, float | None]
+        input: float | None | tuple[float | None, float | None, float | None]
     ) -> tuple[float | None, float | None, float | None]:
         is_valid_value = lambda value: isinstance(value, float) or isinstance(value, int) or value is None
         msg = f"Input for coreset sampling ratio is invalid, expected float, None or 3-tuple, but found {input}."
@@ -129,7 +125,7 @@ class PatchDist(MemoryBankMixin, AnomalyModule):
         # set the device, such that we can create tensors on the current device
         self.model.device = self.device
 
-        if self.fit_index_on_train_start:
+        if self.incremental_indexing:
             embeddings = []
             for item in self.trainer.datamodule.train_data:
                 image = torch.unsqueeze(item["image"], 0)
@@ -172,13 +168,12 @@ class PatchDist(MemoryBankMixin, AnomalyModule):
             embedding = torch.as_tensor(embedding, device=self.get_coreset_sampling_device("step"))
             embedding = self.subsample_embedding(embedding, ratio)
 
-        # Add elements to the index
-        if self.add_index_on_train_step:
+        # Add elements incrementally to the index
+        if self.incremental_indexing:
             self.model.index.add(embedding.cpu().numpy())
 
-        # Store the embedding if used later
-        if not self.fit_index_on_train_start or self.fit_model_on_train_end:
-            self.embeddings.append(embedding.cpu())
+        # Store the embedding for later indexing and training
+        self.embeddings.append(embedding.cpu())
 
     def on_fit_start(self) -> None:
         self.model.device = self.device
@@ -186,10 +181,6 @@ class PatchDist(MemoryBankMixin, AnomalyModule):
     @torch.inference_mode()
     def fit(self) -> None:
         """Learn an indexing structure """
-        if self.fit_index_on_train_start and not self.fit_model_on_train_end:
-            logger.info("No fit required, skipping.")
-            return None
-
         logger.info("Aggregating the embedding extracted from the training set.")
         embeddings = torch.vstack(self.embeddings)
 
@@ -202,14 +193,12 @@ class PatchDist(MemoryBankMixin, AnomalyModule):
         # convert coreset sample to numpy
         embeddings = embeddings.cpu().numpy()
 
-        if not self.fit_index_on_train_start:
+        if not self.incremental_indexing:
             logger.info(f"Learning an index structure with embeddings {embeddings.shape}.")
             self.model.index.fit(embeddings)
-            self.model.index.is_fitted = True
 
-        if self.fit_model_on_train_end:
-            logger.info(f"Learning an outlier detector with embeddings {embeddings.shape}.")
-            self.model.detector.fit(embeddings, self.model.index)
+        logger.info(f"Learning an outlier detector with embeddings {embeddings.shape}.")
+        self.model.detector.fit(embeddings, self.model.index)
 
     @torch.inference_mode()
     def validation_step(self, batch: dict[str, str | torch.Tensor], use_for_normalization: bool = True) -> STEP_OUTPUT:
@@ -233,10 +222,10 @@ class PatchDist(MemoryBankMixin, AnomalyModule):
         return batch
 
     def predict_step(
-            self,
-            batch: dict[str, str | torch.Tensor],
-            batch_idx: int,
-            dataloader_idx: int = 0,
+        self,
+        batch: dict[str, str | torch.Tensor],
+        batch_idx: int,
+        dataloader_idx: int = 0,
     ) -> STEP_OUTPUT:
         """Step function called during :meth:`~lightning.pytorch.trainer.Trainer.predict`.
 
