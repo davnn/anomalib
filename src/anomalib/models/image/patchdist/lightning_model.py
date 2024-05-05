@@ -122,9 +122,6 @@ class PatchDist(MemoryBankMixin, AnomalyModule):
         This is not necesary for most indexing structures, but some require a training stage, see:
         <https://github.com/facebookresearch/faiss/wiki/Faster-search>
         """
-        # set the device, such that we can create tensors on the current device
-        self.model.device = self.device
-
         if self.incremental_indexing:
             embeddings = []
             for item in self.trainer.datamodule.train_data:
@@ -174,9 +171,6 @@ class PatchDist(MemoryBankMixin, AnomalyModule):
 
         # Store the embedding for later indexing and training
         self.embeddings.append(embedding.cpu())
-
-    def on_fit_start(self) -> None:
-        self.model.device = self.device
 
     @torch.inference_mode()
     def fit(self) -> None:

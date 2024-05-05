@@ -30,15 +30,15 @@ class PatchDistModel(nn.Module):
 
     @typecheck
     def __init__(
-            self,
-            input_size: tuple[int, int],
-            layer: str,
-            backbone: str = "wide_resnet50_2",
-            pre_trained: bool = True,
-            index: NearestNeighbors = PatchDistDefaultIndex,
-            detector: KNNDetector = PatchDistDefaultDetector,
-            score_quantile: float = 0.99,
-            score_distribution: DistanceDistribution | None = None
+        self,
+        input_size: tuple[int, int],
+        layer: str,
+        backbone: str = "wide_resnet50_2",
+        pre_trained: bool = True,
+        index: NearestNeighbors = PatchDistDefaultIndex,
+        detector: KNNDetector = PatchDistDefaultDetector,
+        score_quantile: float = 0.99,
+        score_distribution: DistanceDistribution | None = None
     ) -> None:
         super().__init__()
         self.backbone = backbone
@@ -48,7 +48,6 @@ class PatchDistModel(nn.Module):
         self.detector = detector
         self.score_quantile = score_quantile
         self.score_distribution = score_distribution
-        self.device = "cpu"  # to be set in lightning_model.py
         self.feature_extractor = TimmFeatureExtractor(
             backbone=self.backbone,
             pre_trained=pre_trained,
@@ -58,10 +57,10 @@ class PatchDistModel(nn.Module):
 
     @torch.inference_mode
     def forward(
-            self,
-            input_tensor: torch.Tensor,
-            *,
-            use_for_normalization: bool = False,
+        self,
+        input_tensor: torch.Tensor,
+        *,
+        use_for_normalization: bool = False,
     ) -> torch.Tensor | dict[str, torch.Tensor]:
         """Return Embedding during training, or a tuple of anomaly map and anomaly score during testing.
 
@@ -76,6 +75,7 @@ class PatchDistModel(nn.Module):
         embedding = self.feature_extractor(input_tensor)[self.layer]
         batch_size, _, height, width = embedding.shape
         embedding_flat = self.reshape_embedding(embedding)
+        device = input_tensor.device
 
         if self.training:
             # directly return the flattened embedding if in training mode
@@ -102,11 +102,11 @@ class PatchDistModel(nn.Module):
         # determine image score based on the patch score quantile
         image_anomaly_score = torch.quantile(patch_anomaly_score.reshape(batch_size, -1), self.score_quantile, dim=-1)
         # upscale the patch score to determine the image anomaly map
-        image_anomaly_map = self.anomaly_map_generator(patch_anomaly_score.to(self.device), self.input_size)
+        image_anomaly_map = self.anomaly_map_generator(patch_anomaly_score.to(device), self.input_size)
 
         return {
             "anomaly_map": image_anomaly_map,
-            "pred_score": image_anomaly_score.to(self.device),
+            "pred_score": image_anomaly_score.to(device),
         }
 
     @staticmethod
