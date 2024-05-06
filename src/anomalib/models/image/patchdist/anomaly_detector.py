@@ -1,7 +1,7 @@
+import logging
 from abc import ABC
 from typing import Literal, get_args
 
-import logging
 import nearness
 import numpy as np
 import torch
@@ -61,7 +61,7 @@ def query_safe_distances(x: np.ndarray, index: NearestNeighbors, n_neighbors: in
         max_value = np.nanmax(dist, axis=1, keepdims=True)
         dist = np.where(missing_idx, max_value, dist)
 
-    return dist
+    return np.maximum(0.0, dist)  # prevent possible negative distances (e.g. rounding errors)
 
 
 class LOFDetector(Detector):
@@ -91,10 +91,10 @@ class DistanceDistribution:
     valid_distribution = Literal["normal", "lognormal", "halfnormal"]
 
     def __init__(
-            self,
-            n_neighbors: int,
-            distribution: valid_distribution = "normal",
-            min_samples: int = 8,
+        self,
+        n_neighbors: int,
+        distribution: valid_distribution = "normal",
+        min_samples: int = 8,
     ):
         super().__init__()
         self.distribution = distribution
@@ -156,10 +156,10 @@ class DistanceDistribution:
 
     @staticmethod
     def combine_means(
-            agg_mean: torch.Tensor,
-            batch_mean: torch.Tensor,
-            agg_n: int,
-            batch_n: int
+        agg_mean: torch.Tensor,
+        batch_mean: torch.Tensor,
+        agg_n: int,
+        batch_n: int
     ) -> torch.Tensor:
         """
         Updates old mean mu1 from m samples with mean mu2 of n samples.
@@ -169,19 +169,19 @@ class DistanceDistribution:
 
     @staticmethod
     def combine_vars(
-            agg_var: torch.Tensor,
-            batch_var: torch.Tensor,
-            agg_mean: torch.Tensor,
-            batch_mean: torch.Tensor,
-            agg_n: int,
-            batch_n: int
+        agg_var: torch.Tensor,
+        batch_var: torch.Tensor,
+        agg_mean: torch.Tensor,
+        batch_mean: torch.Tensor,
+        agg_n: int,
+        batch_n: int
     ) -> torch.Tensor:
         """
         Updates old variance v1 from m samples with variance v2 of n samples.
         Returns the variance of the m+n samples.
         """
         return (agg_n / (agg_n + batch_n)) * agg_var + batch_n / (agg_n + batch_n) * batch_var + agg_n * batch_n / (
-                agg_n + batch_n) ** 2 * (agg_mean - batch_mean) ** 2
+            agg_n + batch_n) ** 2 * (agg_mean - batch_mean) ** 2
 
     @property
     def std(self):
@@ -220,10 +220,10 @@ def numpy_ecdf(reference: np.ndarray, query: np.ndarray) -> np.ndarray:
 
 
 def local_reachability_density(
-        dist_train: np.ndarray,
-        dist_test: np.ndarray,
-        idx_test: np.ndarray,
-        k: int
+    dist_train: np.ndarray,
+    dist_test: np.ndarray,
+    idx_test: np.ndarray,
+    k: int
 ) -> np.ndarray:
     dist_k = dist_train[idx_test, k - 1]
     reachability_distance = np.maximum(dist_test, dist_k)
@@ -231,9 +231,9 @@ def local_reachability_density(
 
 
 def local_outlier_factor(
-        lrd_train: np.ndarray,
-        lrd_test: np.ndarray,
-        idx_test: np.ndarray
+    lrd_train: np.ndarray,
+    lrd_test: np.ndarray,
+    idx_test: np.ndarray
 ) -> np.ndarray:
     lrd_ratio = lrd_train[idx_test] / (lrd_test[:, np.newaxis] + 1e-8)
     return np.mean(lrd_ratio, axis=1)
