@@ -133,6 +133,7 @@ class HistogramDistanceDistribution(DistanceDistribution):
         self,
         n_neighbors: int,
         min_samples: int = 8,
+        n_buckets: int = 1024,
         min_value: float | None = None,
         max_value: float | None = None,
     ) -> None:
@@ -144,6 +145,7 @@ class HistogramDistanceDistribution(DistanceDistribution):
         :param max_value: Max value for the largest bucket, if none use the max value of the first batch
         """
         super().__init__(n_neighbors=n_neighbors, min_samples=min_samples)
+        self.n_buckets = n_buckets
         self.min_value = min_value
         self.max_value = max_value
 
@@ -164,9 +166,14 @@ class HistogramDistanceDistribution(DistanceDistribution):
             # determine the buckets based on the initial
             min_value = dist.min() if self.min_value is None else self.min_value
             max_value = dist.max() if self.max_value is None else self.max_value
-            self.buckets = torch.linspace(min_value, max_value, steps=1024)
+            self.buckets = torch.linspace(min_value, max_value, steps=self.n_buckets)
 
         bins = torch.bucketize(dist.contiguous(), boundaries=self.buckets, right=False)
+
+        if self.counts is None:
+            # set the initial counts to zero (n_buckets + 1 to open both boundaries)
+            self.counts = bins.new_zeros(bins.size(0), self.n_buckets + 1)
+
         self.counts = bincount(bins, counts=self.counts)
         self.n_samples += n
 
@@ -357,12 +364,10 @@ def raise_reduction(reduction: KNNReductionT) -> None:
     raise AssertionError(msg)
 
 
-def bincount(x: torch.Tensor, counts: torch.Tensor | None = None, dim: int = -1) -> torch.Tensor:
+def bincount(x: torch.Tensor, counts: torch.Tensor, dim: int = -1) -> torch.Tensor:
     """Bincounting along a given dimension, adapted from https://github.com/pytorch/pytorch/issues/32306"""
     assert x.dtype is torch.int64, "only integral (int64) tensor is supported"
     assert dim != 0, "dim cannot be 0, zero is the counting dimension"
-    if counts is None:
-        counts = x.new_zeros(x.size(0), x.max() + 1)
     # no scalar or broadcasting `src` support yet
     # c.f. https://github.com/pytorch/pytorch/issues/5740
     return counts.scatter_add_(dim=dim, index=x, src=x.new_ones(()).expand_as(x))
