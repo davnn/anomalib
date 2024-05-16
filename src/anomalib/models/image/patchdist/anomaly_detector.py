@@ -235,10 +235,10 @@ class HistCDF:
 
     def cdf(self, x: torch.Tensor) -> torch.Tensor:
         _, _, h, w = x.shape
-        x = rearrange(x, "n 1 h w -> n (h w)")
+        x = rearrange(x, "n 1 h w -> (h w) n")
         idx = torch.bucketize(x.contiguous(), boundaries=self.buckets, right=False)
         result = torch.gather(self.proba, dim=-1, index=idx)
-        return rearrange(result, "n (h w) -> n 1 h w", h=h, w=w)
+        return rearrange(result, "(h w) n -> n 1 h w", h=h, w=w)
 
 
 class NormalDistanceDistribution(DistanceDistribution):
