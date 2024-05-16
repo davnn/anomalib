@@ -55,6 +55,9 @@ class PatchDistModel(nn.Module):
         )
         self.anomaly_map_generator = AnomalyMapGenerator(sigma=3).eval()
 
+    def extract_features(self, x: torch.Tensor) -> torch.Tensor:
+        return self.feature_extractor(x)[self.layer]
+
     @torch.inference_mode
     def forward(
         self,
@@ -74,7 +77,7 @@ class PatchDistModel(nn.Module):
             Tensor | dict[str, torch.Tensor]: Embedding for training, anomaly map and anomaly score for testing.
         """
         # generate the embedding
-        embedding = self.feature_extractor(input_tensor)[self.layer]
+        embedding = self.extract_features(input_tensor)
         batch_size, _, height, width = embedding.shape
         embedding_flat = self.reshape_embedding(embedding)
         device = input_tensor.device
