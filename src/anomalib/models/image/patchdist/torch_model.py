@@ -61,12 +61,14 @@ class PatchDistModel(nn.Module):
         input_tensor: torch.Tensor,
         *,
         use_for_normalization: bool = False,
+        disable_normalization: bool = False
     ) -> torch.Tensor | dict[str, torch.Tensor]:
         """Return Embedding during training, or a tuple of anomaly map and anomaly score during testing.
 
         Args:
             input_tensor (torch.Tensor): Input tensor
             use_for_normalization (bool): Use the input tensor to learn a normalization distribution
+            disable_normalization (bool): Do not normalize even if a distribution is available (useful for debugging)
 
         Returns:
             Tensor | dict[str, torch.Tensor]: Embedding for training, anomaly map and anomaly score for testing.
@@ -96,7 +98,9 @@ class PatchDistModel(nn.Module):
         if self.score_distribution is not None and self.score_distribution.is_available:
             # if an update has been performed, we (re-) compute the distribution, otherwise use the computed value
             distribution = self.score_distribution.get(recompute=use_for_normalization)
-            patch_anomaly_score = distribution.cdf(patch_anomaly_score)
+            patch_anomaly_score = distribution.cdf(
+                patch_anomaly_score
+            ) if not disable_normalization else patch_anomaly_score
 
         # determine image score based on the patch score quantile
         image_anomaly_score = torch.quantile(patch_anomaly_score.reshape(batch_size, -1), self.score_quantile, dim=-1)
@@ -106,6 +110,7 @@ class PatchDistModel(nn.Module):
         return {
             "anomaly_map": image_anomaly_map,
             "pred_score": image_anomaly_score.to(device),
+            "patch_score": patch_anomaly_score
         }
 
     @staticmethod
