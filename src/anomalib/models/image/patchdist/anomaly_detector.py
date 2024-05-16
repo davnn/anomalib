@@ -1,16 +1,20 @@
-from abc import ABC
-from typing import Literal, get_args
+from abc import ABC, abstractmethod
+from typing import Literal, get_args, Protocol
 
 import logging
 import nearness
 import numpy as np
 import torch
+from einops import rearrange
 from nearness import NearestNeighbors
 
 __all__ = [
     "KNNDetector",
     "LOFDetector",
-    "DistanceDistribution"
+    "DistanceDistribution",
+    "NormalDistanceDistribution",
+    "EmpiricalDistanceDistribution",
+    "HistogramDistanceDistribution"
 ]
 
 logger = logging.getLogger(__name__)
@@ -87,22 +91,169 @@ class LOFDetector(Detector):
         return local_outlier_factor(self.lrd_train, lrd_test, idx)
 
 
-class DistanceDistribution:
-    valid_distribution = Literal["normal", "lognormal", "halfnormal"]
+class CDF(Protocol):
+    # Empty method body (explicit '...')
+    def cdf(self, x: torch.Tensor) -> torch.Tensor: ...
 
+
+class DistanceDistribution(ABC):
     def __init__(
-            self,
-            n_neighbors: int,
-            distribution: valid_distribution = "normal",
-            min_samples: int = 8,
-    ):
-        super().__init__()
-        self.distribution = distribution
+        self,
+        n_neighbors: int,
+        min_samples: int = 8
+    ) -> None:
         self.n_neighbors = n_neighbors
         self.min_samples = min_samples
+        self.n_samples = 0  # to be updated in ``update``
+        self.computed_distribution = None  # to be updated in ``compute``
+
+    @property
+    def is_available(self):
+        return self.n_samples >= self.min_samples
+
+    def get(self, recompute: bool = False) -> CDF:
+        assert self.is_available, "Cannot compute distribution, n_samples <= min_samples."
+
+        if recompute or self.computed_distribution is None:
+            self.compute()
+
+        return self.computed_distribution
+
+    @abstractmethod
+    def update(self, x: np.ndarray, index: nearness.NearestNeighbors) -> None:
+        ...
+
+    @abstractmethod
+    def compute(self) -> None:
+        ...
+
+
+class HistogramDistanceDistribution(DistanceDistribution):
+    def __init__(
+        self,
+        n_neighbors: int,
+        min_samples: int = 8,
+        min_value: float | None = None,
+        max_value: float | None = None,
+    ) -> None:
+        """
+        Determine the distribution of distances based on a histogram of values (an approximation of the ECDF).
+
+        :param n_neighbors: Number of neighbors to determine the distance distribution.
+        :param min_samples: Minimum number of samples required for distribution computation.
+        :param max_value: Max value for the largest bucket, if none use the max value of the first batch
+        """
+        super().__init__(n_neighbors=n_neighbors, min_samples=min_samples)
+        self.min_value = min_value
+        self.max_value = max_value
+
+        self.buckets = None
+        self.counts = None
+
+    def update(self, x: np.ndarray, index: nearness.NearestNeighbors) -> None:
+        assert index.is_fitted
+        n, c, h, w = x.shape
+
+        # calculate the patch-wise neighborhood scores
+        x_flat = reshape_embedding(x)
+        dist = query_safe_distances(x_flat, index, n_neighbors=self.n_neighbors)  # n_flat, k
+        dist = torch.from_numpy(dist.reshape(n, h, w, self.n_neighbors))
+        dist = rearrange(dist, "n h w k -> (h w) (n k)")
+
+        if self.buckets is None:
+            # determine the buckets based on the initial
+            min_value = dist.min() if self.min_value is None else self.min_value
+            max_value = dist.max() if self.max_value is None else self.max_value
+            self.buckets = torch.linspace(min_value, max_value, steps=1024)
+
+        bins = torch.bucketize(dist.contiguous(), boundaries=self.buckets, right=False)
+        self.counts = bincount(bins, counts=self.counts)
+        self.n_samples += n
+
+    def compute(self) -> None:
+        self.computed_distribution = HistCDF(self.buckets, self.counts)
+
+
+class EmpiricalDistanceDistribution(DistanceDistribution):
+    def __init__(
+        self,
+        n_neighbors: int,
+        min_samples: int = 8,
+    ):
+        super().__init__(n_neighbors=n_neighbors, min_samples=min_samples)
+
+        # to be set in update
+        self.values = None
+
+    def update(self, x: np.ndarray, index: nearness.NearestNeighbors) -> None:
+        assert index.is_fitted
+        n, c, h, w = x.shape
+
+        # calculate the patch-wise neighborhood scores
+        x_flat = reshape_embedding(x)
+        dist = query_safe_distances(x_flat, index, n_neighbors=self.n_neighbors)  # n_flat, k
+        dist = torch.from_numpy(dist.reshape(n, h, w, self.n_neighbors))
+        dist = rearrange(dist, "n h w k -> (h w) (n k)")
+
+        if self.values is None:
+            # initialize an empty tensor if values is none (now we now h and w)
+            self.values = torch.empty((h * w, 0), dtype=dist.dtype)
+
+        self.values = torch.cat([self.values, dist], dim=-1)
+        self.n_samples += n
+
+    def compute(self) -> None:
+        self.computed_distribution = ECDF(values=self.values)
+
+
+class ECDF:
+    def __init__(self, values: torch.Tensor) -> None:
+        sorted_values = torch.sort(values, dim=-1).values
+        self.sorted_values = sorted_values.contiguous()
+
+    def cdf(self, x: torch.Tensor) -> torch.Tensor:
+        _, _, h, w = x.shape
+
+        result = torch.searchsorted(
+            self.sorted_values,
+            rearrange(x, "n 1 h w -> (h w) n").contiguous()
+        ) / self.sorted_values.shape[-1]
+        return rearrange(result, "(h w) n -> n 1 h w", h=h, w=w)
+
+
+class HistCDF:
+    def __init__(
+        self,
+        buckets: torch.Tensor,
+        counts: torch.Tensor
+    ) -> None:
+        cum_sum = torch.cumsum(counts, dim=-1)
+        # cum_sum.max() is actually the number of total elements, which should be same
+        # for all rows in the counts matrix (the total cumulative count)
+        self.proba = cum_sum / cum_sum.max()
+        self.buckets = buckets
+
+    def cdf(self, x: torch.Tensor) -> torch.Tensor:
+        _, _, h, w = x.shape
+        x = rearrange(x, "n 1 h w -> n (h w)")
+        idx = torch.bucketize(x.contiguous(), boundaries=self.buckets, right=False)
+        result = torch.gather(self.proba, dim=-1, index=idx)
+        return rearrange(result, "n (h w) -> n 1 h w", h=h, w=w)
+
+
+class NormalDistanceDistribution(DistanceDistribution):
+    valid_distribution = Literal["normal", "log", "half"]
+
+    def __init__(
+        self,
+        n_neighbors: int,
+        distribution: valid_distribution = "normal",
+        min_samples: int = 8,
+    ):
+        super().__init__(n_neighbors=n_neighbors, min_samples=min_samples)
+        self.distribution = distribution
 
         # to be updated in ``update``
-        self.n_samples = 0
         self.mean = None
         self.var = None
         self.computed_distribution = None
@@ -126,7 +277,7 @@ class DistanceDistribution:
             self.var = torch.zeros(h, w)
 
         # calculate the patch-wise neighborhood scores
-        x_flat = self.reshape_embedding(x)
+        x_flat = reshape_embedding(x)
         dist = query_safe_distances(x_flat, index, n_neighbors=self.n_neighbors)  # n, k
         dist_patch = torch.from_numpy(dist.reshape(n, h, w, self.n_neighbors))
 
@@ -136,7 +287,7 @@ class DistanceDistribution:
         self.var = self.combine_vars(self.var, var, self.mean, mean, self.n_samples, n)
         self.n_samples += n
 
-    def compute(self) -> torch.distributions.Distribution:
+    def compute(self) -> None:
         assert self.is_available
         std, mean = torch.clip(self.std, min=1e-8), self.mean
 
@@ -152,14 +303,12 @@ class DistanceDistribution:
         else:
             raise AssertionError(f"Distribution must be one of {self.valid_distribution}")
 
-        return self.computed_distribution
-
     @staticmethod
     def combine_means(
-            agg_mean: torch.Tensor,
-            batch_mean: torch.Tensor,
-            agg_n: int,
-            batch_n: int
+        agg_mean: torch.Tensor,
+        batch_mean: torch.Tensor,
+        agg_n: int,
+        batch_n: int
     ) -> torch.Tensor:
         """
         Updates old mean mu1 from m samples with mean mu2 of n samples.
@@ -169,43 +318,38 @@ class DistanceDistribution:
 
     @staticmethod
     def combine_vars(
-            agg_var: torch.Tensor,
-            batch_var: torch.Tensor,
-            agg_mean: torch.Tensor,
-            batch_mean: torch.Tensor,
-            agg_n: int,
-            batch_n: int
+        agg_var: torch.Tensor,
+        batch_var: torch.Tensor,
+        agg_mean: torch.Tensor,
+        batch_mean: torch.Tensor,
+        agg_n: int,
+        batch_n: int
     ) -> torch.Tensor:
         """
         Updates old variance v1 from m samples with variance v2 of n samples.
         Returns the variance of the m+n samples.
         """
         return (agg_n / (agg_n + batch_n)) * agg_var + batch_n / (agg_n + batch_n) * batch_var + agg_n * batch_n / (
-                agg_n + batch_n) ** 2 * (agg_mean - batch_mean) ** 2
+            agg_n + batch_n) ** 2 * (agg_mean - batch_mean) ** 2
 
     @property
     def std(self):
         return torch.sqrt(self.var) if self.is_available else None
 
-    @property
-    def is_available(self):
-        return self.n_samples >= self.min_samples
 
-    @staticmethod
-    def reshape_embedding(embedding: np.array) -> np.array:
-        """Reshape Embedding.
+def reshape_embedding(embedding: np.array) -> np.array:
+    """Reshape Embedding.
 
-        Reshapes Embedding to the following format:
-            - [Batch, Embedding, Patch, Patch] to [Batch*Patch*Patch, Embedding]
+    Reshapes Embedding to the following format:
+        - [Batch, Embedding, Patch, Patch] to [Batch*Patch*Patch, Embedding]
 
-        Args:
-            embedding (torch.Tensor): Embedding tensor extracted from CNN features.
+    Args:
+        embedding (torch.Tensor): Embedding tensor extracted from CNN features.
 
-        Returns:
-            Tensor: Reshaped embedding tensor.
-        """
-        embedding_size = embedding.shape[1]
-        return np.transpose(embedding, axes=(0, 2, 3, 1)).reshape(-1, embedding_size)
+    Returns:
+        Tensor: Reshaped embedding tensor.
+    """
+    return rearrange(embedding, "n c h w -> (n h w) c")
 
 
 def raise_reduction(reduction: KNNReductionT) -> None:
@@ -213,17 +357,22 @@ def raise_reduction(reduction: KNNReductionT) -> None:
     raise AssertionError(msg)
 
 
-def numpy_ecdf(reference: np.ndarray, query: np.ndarray) -> np.ndarray:
-    # reference input must be a flat (1d) ascending sorted array
-    result = (np.searchsorted(reference, query, side="right")) / len(reference)
-    return result.astype(query.dtype)
+def bincount(x: torch.Tensor, counts: torch.Tensor | None = None, dim: int = -1) -> torch.Tensor:
+    """Bincounting along a given dimension, adapted from https://github.com/pytorch/pytorch/issues/32306"""
+    assert x.dtype is torch.int64, "only integral (int64) tensor is supported"
+    assert dim != 0, "dim cannot be 0, zero is the counting dimension"
+    if counts is None:
+        counts = x.new_zeros(x.size(0), x.max() + 1)
+    # no scalar or broadcasting `src` support yet
+    # c.f. https://github.com/pytorch/pytorch/issues/5740
+    return counts.scatter_add_(dim=dim, index=x, src=x.new_ones(()).expand_as(x))
 
 
 def local_reachability_density(
-        dist_train: np.ndarray,
-        dist_test: np.ndarray,
-        idx_test: np.ndarray,
-        k: int
+    dist_train: np.ndarray,
+    dist_test: np.ndarray,
+    idx_test: np.ndarray,
+    k: int
 ) -> np.ndarray:
     dist_k = dist_train[idx_test, k - 1]
     reachability_distance = np.maximum(dist_test, dist_k)
@@ -231,9 +380,9 @@ def local_reachability_density(
 
 
 def local_outlier_factor(
-        lrd_train: np.ndarray,
-        lrd_test: np.ndarray,
-        idx_test: np.ndarray
+    lrd_train: np.ndarray,
+    lrd_test: np.ndarray,
+    idx_test: np.ndarray
 ) -> np.ndarray:
     lrd_ratio = lrd_train[idx_test] / (lrd_test[:, np.newaxis] + 1e-8)
     return np.mean(lrd_ratio, axis=1)

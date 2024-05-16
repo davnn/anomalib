@@ -32,7 +32,7 @@ class PatchDistModel(nn.Module):
     def __init__(
         self,
         input_size: tuple[int, int],
-        layer: str,
+        layer: str = "layer2",
         backbone: str = "wide_resnet50_2",
         pre_trained: bool = True,
         index: NearestNeighbors = PatchDistDefaultIndex,
@@ -95,8 +95,7 @@ class PatchDistModel(nn.Module):
         # normalize the patch-wise scores if a normalization distribution is available
         if self.score_distribution is not None and self.score_distribution.is_available:
             # if an update has been performed, we (re-) compute the distribution, otherwise use the computed value
-            distribution = (self.score_distribution.compute()
-                            if use_for_normalization else self.score_distribution.computed_distribution)
+            distribution = self.score_distribution.get(recompute=use_for_normalization)
             patch_anomaly_score = distribution.cdf(patch_anomaly_score)
 
         # determine image score based on the patch score quantile
