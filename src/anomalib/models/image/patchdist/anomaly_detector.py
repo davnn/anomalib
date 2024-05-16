@@ -65,7 +65,7 @@ def query_safe_distances(x: np.ndarray, index: NearestNeighbors, n_neighbors: in
         max_value = np.nanmax(dist, axis=1, keepdims=True)
         dist = np.where(missing_idx, max_value, dist)
 
-    return dist
+    return np.maximum(0.0, dist)  # prevent possible negative distances (e.g. rounding errors)
 
 
 class LOFDetector(Detector):

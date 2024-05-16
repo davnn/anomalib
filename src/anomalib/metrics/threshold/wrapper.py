@@ -1,7 +1,7 @@
 """Implementation of different thresholds in a shared wrapper."""
 
 import logging
-from typing import Literal, Any
+from typing import Literal
 
 import torch
 from typing_extensions import Any
@@ -24,14 +24,14 @@ class WrapperThreshold(BaseThreshold):
     threshold_type = Literal["fixed", "survival", "iqr", "mad", "sigma"]
 
     def __init__(
-            self,
-            default_value: float = 0.5,
-            method: threshold_type = "fixed",
-            # useful for patchdist, to ensure only well-normalized values are used for thresholding
-            ignore_first_n_values: int = 0,
-            **method_kwargs: Any
+        self,
+        default_value: float = 0.5,
+        method: threshold_type = "fixed",
+        # useful for patchdist, to ensure only well-normalized values are used for thresholding
+        ignore_first_n_values: int = 0,
+        **method_kwargs: Any
     ) -> None:
-        super().__init__(num_classes=1)
+        super().__init__()
         self.add_state("scores", default=[], persistent=True)
         self.value = torch.tensor(default_value)
         self.ignore_first_n_values = ignore_first_n_values
