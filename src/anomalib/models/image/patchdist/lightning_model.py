@@ -238,10 +238,14 @@ class PatchDist(MemoryBankMixin, AnomalyModule):
         return self.validation_step(batch, use_for_normalization=False)
 
     def configure_transforms(self, image_size: tuple[int, int] | None = None) -> Transform:
-        # use default imagenet normalization with the given input size
+        # use default imagenet normalization with resizing to the given input size
+        # antialiasing is not relevant for LANCZOS mode, therefore false
+        # choosing the right interpolation algorithm appears to be black art, but LANCZOS
+        # should be a good option:
+        # https://stackoverflow.com/questions/384991/what-is-the-best-image-downscaling-algorithm-quality-wise
         return Compose(
             [
-                Resize(self.model.input_size, interpolation=InterpolationMode.BICUBIC, antialias=True),
+                Resize(self.model.input_size, interpolation=InterpolationMode.LANCZOS, antialias=False),
                 Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
             ],
         )
