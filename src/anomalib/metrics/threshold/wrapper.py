@@ -24,12 +24,12 @@ class WrapperThreshold(BaseThreshold):
     threshold_type = Literal["fixed", "survival", "iqr", "mad", "sigma"]
 
     def __init__(
-        self,
-        default_value: float = 0.5,
-        method: threshold_type = "fixed",
-        # useful for patchdist, to ensure only well-normalized values are used for thresholding
-        ignore_first_n_values: int = 0,
-        **method_kwargs: Any
+            self,
+            default_value: float = 0.5,
+            method: threshold_type = "fixed",
+            # useful for patchdist, to ensure only well-normalized values are used for thresholding
+            ignore_first_n_values: int = 0,
+            **method_kwargs: Any
     ) -> None:
         super().__init__()
         self.add_state("scores", default=[], persistent=True)
@@ -54,8 +54,27 @@ class WrapperThreshold(BaseThreshold):
 
         return self.value
 
+    def compute_components(self) -> tuple[torch.Tensor, torch.Tensor]:
+        """ Determine the threshold for all gathered ``scores``"""
+        if self.method == "fixed" or self.method == "survival":
+            val = self.compute()
+            return val, torch.zeros_like(val)
 
-def threshold(scores: torch.Tensor, method: WrapperThreshold.threshold_type, **kwargs: Any) -> torch.Tensor:
+        scores = self.scores[self.ignore_first_n_values:]  # ignore first values inclusive
+        if len(scores) > 0:
+            cat_scores = torch.cat(scores, dim=0)
+            return threshold(cat_scores, method=self.method, return_components=True, **self.method_kwargs)
+        else:
+            raise ValueError("Can not compute components without scores.")
+
+    def update_threshold_scale(self, scale: float) -> None:
+        """Update the scale value of this object, used in thresholding."""
+        self.method_kwargs["scale"] = scale
+
+
+def threshold(scores: torch.Tensor,
+              method: WrapperThreshold.threshold_type,
+              **kwargs: Any) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
     threshold_map = {
         "survival": threshold_survival,
         "iqr": threshold_iqr,
@@ -71,27 +90,47 @@ def cutoff(scores: torch.Tensor, threshold: float | torch.Tensor) -> torch.Tenso
     return labels
 
 
-def threshold_survival(scores: torch.Tensor, scale: float = 0.01) -> torch.Tensor:
+def threshold_survival(scores: torch.Tensor,
+                       scale: float = 0.01,
+                       return_components=False,
+                       ) -> torch.Tensor:
     assert 0 <= scale <= 1
     x_sorted_val, _ = torch.sort(scores, dim=0, descending=True)
     survival_idx = int(len(scores) * scale)
+    if return_components:
+        logger.warning("Components are not supported for threshold survival - returning single threshold.")
     return x_sorted_val[survival_idx].squeeze()
 
 
-def threshold_iqr(scores: torch.Tensor, scale: float = 1.5) -> torch.Tensor:
+def threshold_iqr(scores: torch.Tensor,
+                  scale: float = 1.5,
+                  return_components=False,
+                  ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
     x_sorted_val, _ = torch.sort(scores, dim=0, descending=False)
     q1_idx, q3_idx = int(len(scores) * 0.25), int(len(scores) * 0.75)
     q1, q3 = x_sorted_val[q1_idx].squeeze(), x_sorted_val[q3_idx].squeeze()
-    return q3 + scale * (iqr := q3 - q1)
+    iqr = q3 - q1
+    return (q3, iqr) if return_components else q3 + scale * iqr
 
 
-def threshold_mad(scores: torch.Tensor, scale: float = 3.0) -> torch.Tensor:
+def threshold_mad(scores: torch.Tensor,
+                  scale: float = 3.0,
+                  return_components=False,
+                  ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
     median = torch.median(scores, dim=0).values
     abs_deviation = torch.abs(scores - median)
     median_abs_deviation = torch.median(abs_deviation, dim=0).values
-    return torch.mean(scores, dim=0).squeeze() + scale * median_abs_deviation.squeeze()
+
+    mean = torch.mean(scores, dim=0).squeeze()
+    median_abs_deviation = median_abs_deviation.squeeze()
+    return (mean, median_abs_deviation) if return_components else mean + scale * median_abs_deviation
 
 
-def threshold_sigma(scores: torch.Tensor, scale: float = 3.0) -> torch.Tensor:
+def threshold_sigma(scores: torch.Tensor,
+                    scale: float = 3.0,
+                    return_components=False,
+                    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
     std, mean = torch.std_mean(scores, dim=0)
-    return mean.squeeze() + scale * std.squeeze()
+    mean = mean.squeeze()
+    std = std.squeeze()
+    return (mean.squeeze(), std.squeeze()) if return_components else mean.squeeze() + scale * std.squeeze()
