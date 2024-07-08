@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 import torch
-from lightning.pytorch.callbacks import Callback
+from lightning.pytorch.callbacks import Callback, RichModelSummary, RichProgressBar
 from lightning.pytorch.loggers import Logger
 from lightning.pytorch.trainer import Trainer
 from lightning.pytorch.utilities.types import _EVALUATE_OUTPUT, _PREDICT_OUTPUT, EVAL_DATALOADERS, TRAIN_DATALOADERS
@@ -26,7 +26,7 @@ from anomalib.callbacks.thresholding import _ThresholdCallback
 from anomalib.callbacks.timer import TimerCallback
 from anomalib.callbacks.visualizer import _VisualizationCallback
 from anomalib.data import AnomalibDataModule, AnomalibDataset, PredictDataset
-from anomalib.deploy.export import ExportType, export_to_onnx, export_to_openvino, export_to_torch
+from anomalib.deploy import CompressionType, ExportType
 from anomalib.models import AnomalyModule
 from anomalib.utils.normalization import NormalizationMethod
 from anomalib.utils.path import create_versioned_dir
@@ -225,6 +225,28 @@ class Engine:
             raise ValueError(msg)
         return callbacks[0] if len(callbacks) > 0 else None
 
+    @property
+    def checkpoint_callback(self) -> ModelCheckpoint | None:
+        """The ``ModelCheckpoint`` callback in the trainer.callbacks list, or ``None`` if it doesn't exist.
+
+        Returns:
+            ModelCheckpoint | None: ModelCheckpoint callback, if available.
+        """
+        if self._trainer is None:
+            return None
+        return self.trainer.checkpoint_callback
+
+    @property
+    def best_model_path(self) -> str | None:
+        """The path to the best model checkpoint.
+
+        Returns:
+            str: Path to the best model checkpoint.
+        """
+        if self.checkpoint_callback is None:
+            return None
+        return self.checkpoint_callback.best_model_path
+
     def _setup_workspace(
         self,
         model: AnomalyModule,
@@ -384,7 +406,7 @@ class Engine:
 
     def _setup_anomalib_callbacks(self) -> None:
         """Set up callbacks for the trainer."""
-        _callbacks: list[Callback] = []
+        _callbacks: list[Callback] = [RichProgressBar(), RichModelSummary()]
 
         # Add ModelCheckpoint if it is not in the callbacks list.
         has_checkpoint_callback = any(isinstance(c, ModelCheckpoint) for c in self._cache.args["callbacks"])
@@ -672,6 +694,7 @@ class Engine:
         dataset: Dataset | PredictDataset | None = None,
         return_predictions: bool | None = None,
         ckpt_path: str | Path | None = None,
+        data_path: str | Path | None = None,
     ) -> _PREDICT_OUTPUT | None:
         """Predict using the model using the trainer.
 
@@ -702,6 +725,9 @@ class Engine:
                 If ``None`` and the model instance was passed, use the current weights.
                 Otherwise, the best model checkpoint from the previous ``trainer.fit`` call will be loaded
                 if a checkpoint callback is configured.
+                Defaults to None.
+            data_path (str | Path | None):
+                Path to the image or folder containing images to generate predictions for.
                 Defaults to None.
 
         Returns:
@@ -743,18 +769,19 @@ class Engine:
         if not ckpt_path:
             logger.warning("ckpt_path is not provided. Model weights will not be loaded.")
 
-        # Handle the instance when a dataset is passed to the predict method
+        # Collect dataloaders
+        if dataloaders is None:
+            dataloaders = []
+        elif isinstance(dataloaders, DataLoader):
+            dataloaders = [dataloaders]
+        elif not isinstance(dataloaders, list):
+            msg = f"Unknown type for dataloaders {type(dataloaders)}"
+            raise TypeError(msg)
         if dataset is not None:
-            dataloader = DataLoader(dataset)
-            if dataloaders is None:
-                dataloaders = dataloader
-            elif isinstance(dataloaders, DataLoader):
-                dataloaders = [dataloaders, dataloader]
-            elif isinstance(dataloaders, list):  # dataloader is a list
-                dataloaders.append(dataloader)
-            else:
-                msg = f"Unknown type for dataloaders {type(dataloaders)}"
-                raise TypeError(msg)
+            dataloaders.append(DataLoader(dataset))
+        if data_path is not None:
+            dataloaders.append(DataLoader(PredictDataset(data_path)))
+        dataloaders = dataloaders or None
 
         self._setup_dataset_task(dataloaders, datamodule)
         self._setup_transform(model or self.model, datamodule=datamodule, dataloaders=dataloaders, ckpt_path=ckpt_path)
@@ -838,21 +865,32 @@ class Engine:
     def export(
         self,
         model: AnomalyModule,
-        export_type: ExportType,
+        export_type: ExportType | str,
         export_root: str | Path | None = None,
+        input_size: tuple[int, int] | None = None,
         transform: Transform | None = None,
+        compression_type: CompressionType | None = None,
+        datamodule: AnomalibDataModule | None = None,
         ov_args: dict[str, Any] | None = None,
         ckpt_path: str | Path | None = None,
     ) -> Path | None:
-        """Export the model in PyTorch, ONNX or OpenVINO format.
+        r"""Export the model in PyTorch, ONNX or OpenVINO format.
 
         Args:
             model (AnomalyModule): Trained model.
             export_type (ExportType): Export type.
             export_root (str | Path | None, optional): Path to the output directory. If it is not set, the model is
                 exported to trainer.default_root_dir. Defaults to None.
+            input_size (tuple[int, int] | None, optional): A statis input shape for the model, which is exported to ONNX
+                and OpenVINO format. Defaults to None.
             transform (Transform | None, optional): Input transform to include in the exported model. If not provided,
-                the engine will try to use the transform from the datamodule or dataset. Defaults to None.
+                the engine will try to use the default transform from the model.
+                Defaults to ``None``.
+            compression_type (CompressionType | None, optional): Compression type for OpenVINO exporting only.
+                Defaults to ``None``.
+            datamodule (AnomalibDataModule | None, optional): Lightning datamodule.
+                Must be provided if CompressionType.INT8_PTQ is selected.
+                Defaults to ``None``.
             ov_args (dict[str, Any] | None, optional): This is optional and used only for OpenVINO's model optimizer.
                 Defaults to None.
             ckpt_path (str | Path | None): Checkpoint path. If provided, the model will be loaded from this path.
@@ -867,22 +905,25 @@ class Engine:
         CLI Usage:
             1. To export as a torch ``.pt`` file you can run the following command.
                 ```python
-                anomalib export --model Padim --export_mode TORCH --data MVTec
+                anomalib export --model Padim --export_mode torch --ckpt_path <PATH_TO_CHECKPOINT>
                 ```
             2. To export as an ONNX ``.onnx`` file you can run the following command.
                 ```python
-                anomalib export --model Padim --export_mode ONNX --data Visa --input_size "[256,256]"
+                anomalib export --model Padim --export_mode onnx --ckpt_path <PATH_TO_CHECKPOINT> \
+                --input_size "[256,256]"
                 ```
             3. To export as an OpenVINO ``.xml`` and ``.bin`` file you can run the following command.
                 ```python
-                anomalib export --model Padim --export_mode OPENVINO --data Visa --input_size "[256,256]"
+                anomalib export --model Padim --export_mode openvino --ckpt_path <PATH_TO_CHECKPOINT> \
+                --input_size "[256,256]"
                 ```
-            4. You can also overrride OpenVINO model optimizer by adding the ``--mo_args.<key>`` arguments.
+            4. You can also override OpenVINO model optimizer by adding the ``--ov_args.<key>`` arguments.
                 ```python
-                anomalib export --model Padim --export_mode OPENVINO --data Visa --input_size "[256,256]" \
-                    --mo_args.compress_to_fp16 False
+                anomalib export --model Padim --export_mode openvino --ckpt_path <PATH_TO_CHECKPOINT> \
+                --input_size "[256,256]" --ov_args.compress_to_fp16 False
                 ```
         """
+        export_type = ExportType(export_type)
         self._setup_trainer(model)
         if ckpt_path:
             ckpt_path = Path(ckpt_path).resolve()
@@ -893,25 +934,26 @@ class Engine:
 
         exported_model_path: Path | None = None
         if export_type == ExportType.TORCH:
-            exported_model_path = export_to_torch(
-                model=model,
+            exported_model_path = model.to_torch(
                 export_root=export_root,
                 transform=transform,
                 task=self.task,
             )
         elif export_type == ExportType.ONNX:
-            exported_model_path = export_to_onnx(
-                model=model,
+            exported_model_path = model.to_onnx(
                 export_root=export_root,
+                input_size=input_size,
                 transform=transform,
                 task=self.task,
             )
         elif export_type == ExportType.OPENVINO:
-            exported_model_path = export_to_openvino(
-                model=model,
+            exported_model_path = model.to_openvino(
                 export_root=export_root,
+                input_size=input_size,
                 transform=transform,
                 task=self.task,
+                compression_type=compression_type,
+                datamodule=datamodule,
                 ov_args=ov_args,
             )
         else:
@@ -920,3 +962,52 @@ class Engine:
         if exported_model_path:
             logging.info(f"Exported model to {exported_model_path}")
         return exported_model_path
+
+    @classmethod
+    def from_config(
+        cls: type["Engine"],
+        config_path: str | Path,
+        **kwargs,
+    ) -> tuple["Engine", AnomalyModule, AnomalibDataModule]:
+        """Create an Engine instance from a configuration file.
+
+        Args:
+            config_path (str | Path): Path to the full configuration file.
+            **kwargs (dict): Additional keyword arguments.
+
+        Returns:
+            tuple[Engine, AnomalyModule, AnomalibDataModule]: Engine instance.
+
+        Example:
+            The following example shows training with full configuration file:
+
+            .. code-block:: python
+                >>> config_path = "anomalib_full_config.yaml"
+                >>> engine, model, datamodule = Engine.from_config(config_path=config_path)
+                >>> engine.fit(datamodule=datamodule, model=model)
+
+            The following example shows overriding the configuration file with additional keyword arguments:
+
+            .. code-block:: python
+                >>> override_kwargs = {"data.train_batch_size": 8}
+                >>> engine, model, datamodule = Engine.from_config(config_path=config_path, **override_kwargs)
+                >>> engine.fit(datamodule=datamodule, model=model)
+        """
+        from anomalib.cli.cli import AnomalibCLI
+
+        if not Path(config_path).exists():
+            msg = f"Configuration file not found: {config_path}"
+            raise FileNotFoundError(msg)
+
+        args = [
+            "fit",
+            "--config",
+            str(config_path),
+        ]
+        for key, value in kwargs.items():
+            args.extend([f"--{key}", str(value)])
+        anomalib_cli = AnomalibCLI(
+            args=args,
+            run=False,
+        )
+        return anomalib_cli.engine, anomalib_cli.model, anomalib_cli.datamodule

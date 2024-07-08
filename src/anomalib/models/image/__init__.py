@@ -12,6 +12,7 @@ from .draem import Draem
 from .dsr import Dsr
 from .efficient_ad import EfficientAd
 from .fastflow import Fastflow
+from .fre import Fre
 from .ganomaly import Ganomaly
 from .padim import Padim
 from .patchcore import Patchcore
@@ -32,6 +33,7 @@ __all__ = [
     "Dsr",
     "EfficientAd",
     "Fastflow",
+    "Fre",
     "Ganomaly",
     "Padim",
     "Patchcore",

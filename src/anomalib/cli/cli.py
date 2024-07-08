@@ -6,7 +6,6 @@
 import logging
 from collections.abc import Callable, Sequence
 from functools import partial
-from inspect import signature
 from pathlib import Path
 from types import MethodType
 from typing import Any
@@ -16,6 +15,7 @@ from jsonargparse._actions import _ActionSubCommands
 from rich import traceback
 
 from anomalib import TaskType, __version__
+from anomalib.cli.pipelines import PIPELINE_REGISTRY, pipeline_subcommands, run_pipeline
 from anomalib.cli.utils.help_formatter import CustomHelpFormatter, get_short_docstring
 from anomalib.cli.utils.openvino import add_openvino_export_arguments
 from anomalib.loggers import configure_logger
@@ -29,7 +29,6 @@ try:
     from torch.utils.data import DataLoader, Dataset
 
     from anomalib.data import AnomalibDataModule
-    from anomalib.data.predict import PredictDataset
     from anomalib.engine import Engine
     from anomalib.metrics.threshold import BaseThreshold
     from anomalib.models import AnomalyModule
@@ -52,7 +51,7 @@ class AnomalibCLI:
     ``SaveConfigCallback`` overwrites the config if it already exists.
     """
 
-    def __init__(self, args: Sequence[str] | None = None) -> None:
+    def __init__(self, args: Sequence[str] | None = None, run: bool = True) -> None:
         self.parser = self.init_parser()
         self.subcommand_parsers: dict[str, ArgumentParser] = {}
         self.subcommand_method_arguments: dict[str, list[str]] = {}
@@ -62,7 +61,8 @@ class AnomalibCLI:
         if _LIGHTNING_AVAILABLE:
             self.before_instantiate_classes()
             self.instantiate_classes()
-        self._run_subcommand()
+        if run:
+            self._run_subcommand()
 
     def init_parser(self, **kwargs) -> ArgumentParser:
         """Method that instantiates the argument parser."""
@@ -131,6 +131,13 @@ class AnomalibCLI:
             )
             # add arguments to subcommand
             getattr(self, f"add_{subcommand}_arguments")(sub_parser)
+
+        # Add pipeline subcommands
+        if PIPELINE_REGISTRY is not None:
+            for subcommand, value in pipeline_subcommands().items():
+                sub_parser = PIPELINE_REGISTRY[subcommand].get_parser()
+                self.subcommand_parsers[subcommand] = sub_parser
+                parser_subcommands.add_subcommand(subcommand, sub_parser, help=value["description"])
 
     def add_arguments_to_parser(self, parser: ArgumentParser) -> None:
         """Extend trainer's arguments to add engine arguments.
@@ -216,7 +223,7 @@ class AnomalibCLI:
         added = parser.add_method_arguments(
             Engine,
             "predict",
-            skip={"model", "dataloaders", "datamodule", "dataset"},
+            skip={"model", "dataloaders", "datamodule", "dataset", "data_path"},
         )
         self.subcommand_method_arguments["predict"] = added
         self.add_arguments_to_parser(parser)
@@ -231,10 +238,15 @@ class AnomalibCLI:
             fail_untyped=False,
             required=True,
         )
+        parser.add_argument(
+            "--data",
+            type=AnomalibDataModule,
+            required=False,
+        )
         added = parser.add_method_arguments(
             Engine,
             "export",
-            skip={"mo_args", "model"},
+            skip={"ov_args", "model", "datamodule"},
         )
         self.subcommand_method_arguments["export"] = added
         add_openvino_export_arguments(parser)
@@ -267,8 +279,6 @@ class AnomalibCLI:
         """Modify the configuration to properly instantiate classes and sets up tiler."""
         subcommand = self.config["subcommand"]
         if subcommand in (*self.subcommands(), "train", "predict"):
-            if self.config["subcommand"] == "predict" and isinstance(self.config["predict"]["data"], str | Path):
-                self.config["predict"]["data"] = self._set_predict_dataloader_namespace(self.config["predict"]["data"])
             self.config[subcommand] = update_config(self.config[subcommand])
 
     def instantiate_classes(self) -> None:
@@ -353,6 +363,8 @@ class AnomalibCLI:
             fn = getattr(self.engine, self.subcommand)
             fn_kwargs = self._prepare_subcommand_kwargs(self.subcommand)
             fn(**fn_kwargs)
+        elif PIPELINE_REGISTRY is not None and self.subcommand in pipeline_subcommands():
+            run_pipeline(self.config)
         else:
             self.config_init = self.parser.instantiate_classes(self.config)
             getattr(self, f"{self.subcommand}")()
@@ -415,27 +427,6 @@ class AnomalibCLI:
                 **scheduler_kwargs,
             )
 
-    def _set_predict_dataloader_namespace(self, data_path: str | Path | Namespace) -> Namespace:
-        """Set the predict dataloader namespace.
-
-        If the argument is of type str or Path, then it is assumed to be the path to the prediction data and is
-        assigned to PredictDataset.
-
-        Args:
-            data_path (str | Path | Namespace): Path to the data.
-
-        Returns:
-            Namespace: Namespace containing the predict dataloader.
-        """
-        if isinstance(data_path, str | Path):
-            init_args = {key: value.default for key, value in signature(PredictDataset).parameters.items()}
-            init_args["path"] = data_path
-            data_path = Namespace(
-                class_path="anomalib.data.predict.PredictDataset",
-                init_args=Namespace(init_args),
-            )
-        return data_path
-
     def _add_default_arguments_to_parser(self, parser: ArgumentParser) -> None:
         """Adds default arguments to the parser."""
         parser.add_argument(
@@ -463,6 +454,8 @@ class AnomalibCLI:
                 fn_kwargs["datamodule"] = self.datamodule
             elif isinstance(self.datamodule, DataLoader):
                 fn_kwargs["dataloaders"] = self.datamodule
+            elif isinstance(self.datamodule, Path | str):
+                fn_kwargs["data_path"] = self.datamodule
         return fn_kwargs
 
     def _parser(self, subcommand: str | None) -> ArgumentParser:
