@@ -155,8 +155,8 @@ class _MetricsCallback(Callback):
 
     @staticmethod
     def _set_threshold(pl_module: AnomalyModule) -> None:
-        pl_module.image_metrics.set_threshold(pl_module.image_threshold.value.item())
-        pl_module.pixel_metrics.set_threshold(pl_module.pixel_threshold.value.item())
+        pl_module.image_metrics.set_threshold(pl_module.image_threshold.value)
+        pl_module.pixel_metrics.set_threshold(pl_module.pixel_threshold.value)
 
     def _update_metrics(
         self,

@@ -23,8 +23,8 @@ class _ThresholdCallback(Callback):
     """
 
     def __init__(
-        self,
-        threshold: THRESHOLD = "F1AdaptiveThreshold",
+            self,
+            threshold: THRESHOLD = "F1AdaptiveThreshold",
     ) -> None:
         super().__init__()
         self._initialize_thresholds(threshold)
@@ -43,13 +43,13 @@ class _ThresholdCallback(Callback):
         self._reset(pl_module)
 
     def on_validation_batch_end(
-        self,
-        trainer: Trainer,
-        pl_module: AnomalyModule,
-        outputs: STEP_OUTPUT | None,
-        batch: Any,  # noqa: ANN401
-        batch_idx: int,
-        dataloader_idx: int = 0,
+            self,
+            trainer: Trainer,
+            pl_module: AnomalyModule,
+            outputs: STEP_OUTPUT | None,
+            batch: Any,  # noqa: ANN401
+            batch_idx: int,
+            dataloader_idx: int = 0,
     ) -> None:
         del trainer, batch, batch_idx, dataloader_idx  # Unused arguments.
         if outputs is not None:
@@ -61,8 +61,8 @@ class _ThresholdCallback(Callback):
         self._compute(pl_module)
 
     def _initialize_thresholds(
-        self,
-        threshold: THRESHOLD,
+            self,
+            threshold: THRESHOLD,
     ) -> None:
         """Initialize ``self.image_threshold`` and ``self.pixel_threshold``.
 
@@ -188,9 +188,12 @@ class _ThresholdCallback(Callback):
     def _update(pl_module: AnomalyModule, outputs: STEP_OUTPUT) -> None:
         pl_module.image_threshold.cpu()
         pl_module.image_threshold.update(outputs["pred_scores"], outputs["label"].int())
-        if "mask" in outputs and "anomaly_maps" in outputs:
+        if "anomaly_maps" in outputs:
             pl_module.pixel_threshold.cpu()
-            pl_module.pixel_threshold.update(outputs["anomaly_maps"], outputs["mask"].int())
+            if "mask" in outputs:
+                pl_module.pixel_threshold.update(outputs["anomaly_maps"], outputs["mask"].int())
+            else:
+                pl_module.pixel_threshold.update(outputs["anomaly_maps"], None)
 
     @staticmethod
     def _compute(pl_module: AnomalyModule) -> None:

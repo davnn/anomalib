@@ -13,7 +13,7 @@ from importlib.metadata import requires
 from pathlib import Path
 from warnings import warn
 
-from pkg_resources import Requirement
+from packaging.requirements import Requirement
 
 AVAILABLE_TORCH_VERSIONS = {
     "2.0.0": {"torchvision": "0.15.1", "cuda": ("11.7", "11.8")},

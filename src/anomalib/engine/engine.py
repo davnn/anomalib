@@ -529,7 +529,7 @@ class Engine:
             train_dataloaders=train_dataloaders,
             val_dataloaders=val_dataloaders,
             datamodule=datamodule,
-            versioned_dir=True,
+            versioned_dir=False,
         )
         self._setup_trainer(model)
         self._setup_dataset_task(train_dataloaders, val_dataloaders, datamodule)
@@ -846,7 +846,7 @@ class Engine:
             val_dataloaders,
             test_dataloaders,
             datamodule,
-            versioned_dir=True,
+            versioned_dir=False,
         )
         self._setup_trainer(model)
         self._setup_dataset_task(
