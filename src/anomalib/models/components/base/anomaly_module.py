@@ -15,17 +15,17 @@ import torch
 from lightning.pytorch.trainer.states import TrainerFn
 from lightning.pytorch.utilities.types import STEP_OUTPUT
 from torch import nn
+from torchmetrics import MetricCollection
 from torchvision.transforms.v2 import Compose, Normalize, Resize, Transform
 
 from anomalib import LearningType
 from anomalib.metrics import AnomalibMetricCollection
-from anomalib.metrics.threshold import BaseThreshold
+from anomalib.metrics.threshold import Threshold
 
 from .export_mixin import ExportMixin
 
 if TYPE_CHECKING:
     from lightning.pytorch.callbacks import Callback
-    from torchmetrics import Metric
 
 
 logger = logging.getLogger(__name__)
@@ -46,10 +46,10 @@ class AnomalyModule(ExportMixin, pl.LightningModule, ABC):
         self.loss: nn.Module
         self.callbacks: list[Callback]
 
-        self.image_threshold: BaseThreshold
-        self.pixel_threshold: BaseThreshold
+        self.image_threshold: Threshold
+        self.pixel_threshold: Threshold
 
-        self.normalization_metrics: Metric
+        self.normalization_metrics: MetricCollection
 
         self.image_metrics: AnomalibMetricCollection
         self.pixel_metrics: AnomalibMetricCollection
@@ -147,16 +147,17 @@ class AnomalyModule(ExportMixin, pl.LightningModule, ABC):
 
     def _save_to_state_dict(self, destination: OrderedDict, prefix: str, keep_vars: bool) -> None:
         if hasattr(self, "image_threshold"):
-            destination[
-                "image_threshold_class"
-            ] = f"{self.image_threshold.__class__.__module__}.{self.image_threshold.__class__.__name__}"
+            destination["image_threshold_class"] = (
+                f"{self.image_threshold.__class__.__module__}.{self.image_threshold.__class__.__name__}"
+            )
         if hasattr(self, "pixel_threshold"):
-            destination[
-                "pixel_threshold_class"
-            ] = f"{self.pixel_threshold.__class__.__module__}.{self.pixel_threshold.__class__.__name__}"
+            destination["pixel_threshold_class"] = (
+                f"{self.pixel_threshold.__class__.__module__}.{self.pixel_threshold.__class__.__name__}"
+            )
         if hasattr(self, "normalization_metrics"):
-            normalization_class = self.normalization_metrics.__class__
-            destination["normalization_class"] = f"{normalization_class.__module__}.{normalization_class.__name__}"
+            for metric in self.normalization_metrics:
+                metric_class = self.normalization_metrics[metric].__class__
+                destination[f"{metric}_normalization_class"] = f"{metric_class.__module__}.{metric_class.__name__}"
 
         return super()._save_to_state_dict(destination, prefix, keep_vars)
 
@@ -166,8 +167,20 @@ class AnomalyModule(ExportMixin, pl.LightningModule, ABC):
             self.image_threshold = self._get_instance(state_dict, "image_threshold_class")
         if "pixel_threshold_class" in state_dict:
             self.pixel_threshold = self._get_instance(state_dict, "pixel_threshold_class")
-        if "normalization_class" in state_dict:
-            self.normalization_metrics = self._get_instance(state_dict, "normalization_class")
+
+        # check only for pred score normalization metrics, because if this one is present, all others are too
+        if "pred_scores_normalization_class" in state_dict:
+            self.box_scores_normalization_metrics = self._get_instance(state_dict, "box_scores_normalization_class")
+            self.anomaly_maps_normalization_metrics = self._get_instance(state_dict, "anomaly_maps_normalization_class")
+            self.pred_scores_normalization_metrics = self._get_instance(state_dict, "pred_scores_normalization_class")
+
+            self.normalization_metrics = MetricCollection(
+                {
+                    "anomaly_maps": self.anomaly_maps_normalization_metrics,
+                    "box_scores": self.box_scores_normalization_metrics,
+                    "pred_scores": self.pred_scores_normalization_metrics,
+                },
+            )
         # Used to load metrics if there is any related data in state_dict
         self._load_metrics(state_dict)
 
@@ -201,7 +214,8 @@ class AnomalyModule(ExportMixin, pl.LightningModule, ABC):
                 logger.info("Loading %s metrics from state dict", class_name)
                 metrics.add_metrics(metrics_cls())
 
-    def _get_instance(self, state_dict: OrderedDict[str, Any], dict_key: str) -> BaseThreshold:
+    @staticmethod
+    def _get_instance(state_dict: OrderedDict[str, Any], dict_key: str) -> Threshold:
         """Get the threshold class from the ``state_dict``."""
         class_path = state_dict.pop(dict_key)
         module = importlib.import_module(".".join(class_path.split(".")[:-1]))
@@ -226,7 +240,7 @@ class AnomalyModule(ExportMixin, pl.LightningModule, ABC):
         """Update the transform linked to the model instance."""
         self._transform = transform
 
-    def configure_transforms(self, image_size: tuple[int, int] | None = None) -> Transform:
+    def configure_transforms(self, image_size: tuple[int, int] | None = None) -> Transform:  # noqa: PLR6301
         """Default transforms.
 
         The default transform is resize to 256x256 and normalize to ImageNet stats. Individual models can override
@@ -325,7 +339,7 @@ class AnomalyModule(ExportMixin, pl.LightningModule, ABC):
         model_parser.add_argument("--task", type=TaskType | str, default=TaskType.SEGMENTATION)
         model_parser.add_argument("--metrics.image", type=list[str] | str | None, default=["F1Score", "AUROC"])
         model_parser.add_argument("--metrics.pixel", type=list[str] | str | None, default=None, required=False)
-        model_parser.add_argument("--metrics.threshold", type=BaseThreshold | str, default="F1AdaptiveThreshold")
+        model_parser.add_argument("--metrics.threshold", type=Threshold | str, default="F1AdaptiveThreshold")
         model_parser.add_class_arguments(Trainer, "trainer", fail_untyped=False, instantiate=False, sub_configs=True)
         args = ["--config", str(config_path)]
         for key, value in kwargs.items():

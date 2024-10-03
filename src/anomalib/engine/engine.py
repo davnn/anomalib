@@ -9,11 +9,12 @@ from pathlib import Path
 from typing import Any
 
 import torch
-from lightning.pytorch.callbacks import Callback, RichModelSummary, RichProgressBar
+from lightning.pytorch.callbacks import Callback
 from lightning.pytorch.loggers import Logger
 from lightning.pytorch.trainer import Trainer
 from lightning.pytorch.utilities.types import _EVALUATE_OUTPUT, _PREDICT_OUTPUT, EVAL_DATALOADERS, TRAIN_DATALOADERS
 from torch.utils.data import DataLoader, Dataset
+from torchmetrics import Metric
 from torchvision.transforms.v2 import Transform
 
 from anomalib import LearningType, TaskType
@@ -182,7 +183,7 @@ class Engine:
         Returns:
             AnomalyModule: Anomaly model.
         """
-        if not self.trainer.model:
+        if not self.trainer.lightning_module:
             msg = "Trainer does not have a model assigned yet."
             raise UnassignedError(msg)
         return self.trainer.lightning_module
@@ -406,7 +407,7 @@ class Engine:
 
     def _setup_anomalib_callbacks(self) -> None:
         """Set up callbacks for the trainer."""
-        _callbacks: list[Callback] = [RichProgressBar(), RichModelSummary()]
+        _callbacks: list[Callback] = []
 
         # Add ModelCheckpoint if it is not in the callbacks list.
         has_checkpoint_callback = any(isinstance(c, ModelCheckpoint) for c in self._cache.args["callbacks"])
@@ -433,7 +434,7 @@ class Engine:
 
         _callbacks.append(
             _VisualizationCallback(
-                visualizers=ImageVisualizer(task=self.task),
+                visualizers=ImageVisualizer(task=self.task, normalize=self.normalization == NormalizationMethod.NONE),
                 save=True,
                 root=self._cache.args["default_root_dir"] / "images",
             ),
@@ -473,7 +474,7 @@ class Engine:
             bool: Whether it is needed to run a validation sequence.
         """
         # validation before predict is only necessary for zero-/few-shot models
-        if model.learning_type not in [LearningType.ZERO_SHOT, LearningType.FEW_SHOT]:
+        if model.learning_type not in {LearningType.ZERO_SHOT, LearningType.FEW_SHOT}:
             return False
         # check if a checkpoint path is provided
         if ckpt_path is not None:
@@ -533,7 +534,7 @@ class Engine:
         self._setup_trainer(model)
         self._setup_dataset_task(train_dataloaders, val_dataloaders, datamodule)
         self._setup_transform(model, datamodule=datamodule, ckpt_path=ckpt_path)
-        if model.learning_type in [LearningType.ZERO_SHOT, LearningType.FEW_SHOT]:
+        if model.learning_type in {LearningType.ZERO_SHOT, LearningType.FEW_SHOT}:
             # if the model is zero-shot or few-shot, we only need to run validate for normalization and thresholding
             self.trainer.validate(model, val_dataloaders, datamodule=datamodule, ckpt_path=ckpt_path)
         else:
@@ -855,7 +856,7 @@ class Engine:
             datamodule,
         )
         self._setup_transform(model, datamodule=datamodule, ckpt_path=ckpt_path)
-        if model.learning_type in [LearningType.ZERO_SHOT, LearningType.FEW_SHOT]:
+        if model.learning_type in {LearningType.ZERO_SHOT, LearningType.FEW_SHOT}:
             # if the model is zero-shot or few-shot, we only need to run validate for normalization and thresholding
             self.trainer.validate(model, val_dataloaders, None, verbose=False, datamodule=datamodule)
         else:
@@ -871,6 +872,7 @@ class Engine:
         transform: Transform | None = None,
         compression_type: CompressionType | None = None,
         datamodule: AnomalibDataModule | None = None,
+        metric: Metric | str | None = None,
         ov_args: dict[str, Any] | None = None,
         ckpt_path: str | Path | None = None,
     ) -> Path | None:
@@ -889,7 +891,12 @@ class Engine:
             compression_type (CompressionType | None, optional): Compression type for OpenVINO exporting only.
                 Defaults to ``None``.
             datamodule (AnomalibDataModule | None, optional): Lightning datamodule.
-                Must be provided if CompressionType.INT8_PTQ is selected.
+                Must be provided if ``CompressionType.INT8_PTQ`` or `CompressionType.INT8_ACQ`` is selected
+                (OpenVINO export only).
+                Defaults to ``None``.
+            metric (Metric | str | None, optional): Metric to measure quality loss when quantizing.
+                Must be provided if ``CompressionType.INT8_ACQ`` is selected and must return higher value for better
+                performance of the model (OpenVINO export only).
                 Defaults to ``None``.
             ov_args (dict[str, Any] | None, optional): This is optional and used only for OpenVINO's model optimizer.
                 Defaults to None.
@@ -905,22 +912,22 @@ class Engine:
         CLI Usage:
             1. To export as a torch ``.pt`` file you can run the following command.
                 ```python
-                anomalib export --model Padim --export_mode torch --ckpt_path <PATH_TO_CHECKPOINT>
+                anomalib export --model Padim --export_type torch --ckpt_path <PATH_TO_CHECKPOINT>
                 ```
             2. To export as an ONNX ``.onnx`` file you can run the following command.
                 ```python
-                anomalib export --model Padim --export_mode onnx --ckpt_path <PATH_TO_CHECKPOINT> \
+                anomalib export --model Padim --export_type onnx --ckpt_path <PATH_TO_CHECKPOINT> \
                 --input_size "[256,256]"
                 ```
             3. To export as an OpenVINO ``.xml`` and ``.bin`` file you can run the following command.
                 ```python
-                anomalib export --model Padim --export_mode openvino --ckpt_path <PATH_TO_CHECKPOINT> \
-                --input_size "[256,256]"
+                anomalib export --model Padim --export_type openvino --ckpt_path <PATH_TO_CHECKPOINT> \
+                --input_size "[256,256] --compression_type FP16
                 ```
-            4. You can also override OpenVINO model optimizer by adding the ``--ov_args.<key>`` arguments.
+            4. You can also quantize OpenVINO model with the following.
                 ```python
-                anomalib export --model Padim --export_mode openvino --ckpt_path <PATH_TO_CHECKPOINT> \
-                --input_size "[256,256]" --ov_args.compress_to_fp16 False
+                anomalib export --model Padim --export_type openvino --ckpt_path <PATH_TO_CHECKPOINT> \
+                --input_size "[256,256]" --compression_type INT8_PTQ --data MVTec
                 ```
         """
         export_type = ExportType(export_type)
@@ -954,6 +961,7 @@ class Engine:
                 task=self.task,
                 compression_type=compression_type,
                 datamodule=datamodule,
+                metric=metric,
                 ov_args=ov_args,
             )
         else:
