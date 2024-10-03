@@ -30,11 +30,11 @@ class PatchcoreModel(DynamicBufferMixin, nn.Module):
     """
 
     def __init__(
-        self,
-        layers: Sequence[str],
-        backbone: str = "wide_resnet50_2",
-        pre_trained: bool = True,
-        num_neighbors: int = 9,
+            self,
+            layers: Sequence[str],
+            backbone: str = "wide_resnet50_2",
+            pre_trained: bool = True,
+            num_neighbors: int = 9,
     ) -> None:
         super().__init__()
         self.tiler: Tiler | None = None
@@ -189,10 +189,10 @@ class PatchcoreModel(DynamicBufferMixin, nn.Module):
         return patch_scores, locations
 
     def compute_anomaly_score(
-        self,
-        patch_scores: torch.Tensor,
-        locations: torch.Tensor,
-        embedding: torch.Tensor,
+            self,
+            patch_scores: torch.Tensor,
+            locations: torch.Tensor,
+            embedding: torch.Tensor,
     ) -> torch.Tensor:
         """Compute Image-Level Anomaly Score.
 
