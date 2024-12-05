@@ -46,10 +46,9 @@ class WrapperThreshold(BaseThreshold):
 
     def compute(self) -> torch.Tensor:
         """ Determine the threshold for all gathered ``scores``"""
-        scores = self.scores[self.ignore_first_n_values:]  # ignore first values inclusive
-        if len(scores) > 0 and self.method != "fixed":
-            cat_scores = torch.cat(scores, dim=0)
-            value = threshold(cat_scores, method=self.method, **self.method_kwargs)
+        if len(self.scores) > 0 and self.method != "fixed":
+            scores = torch.cat(self.scores, dim=0)[self.ignore_first_n_values:]  # ignore first values inclusive
+            value = threshold(scores, method=self.method, **self.method_kwargs)
             self.value = value
 
         return self.value
@@ -60,10 +59,9 @@ class WrapperThreshold(BaseThreshold):
             val = self.compute()
             return val, torch.zeros_like(val)
 
-        scores = self.scores[self.ignore_first_n_values:]  # ignore first values inclusive
-        if len(scores) > 0:
-            cat_scores = torch.cat(scores, dim=0)
-            return threshold(cat_scores, method=self.method, return_components=True, **self.method_kwargs)
+        if len(self.scores) > 0:
+            scores = torch.cat(self.scores, dim=0)[self.ignore_first_n_values:]  # ignore first values inclusive
+            return threshold(scores, method=self.method, return_components=True, **self.method_kwargs)
         else:
             raise ValueError("Can not compute components without scores.")
 
