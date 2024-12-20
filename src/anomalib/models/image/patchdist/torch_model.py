@@ -1,11 +1,14 @@
 """PyTorch model for the PatchDist model implementation."""
+import enum
 
 import torch
+import timm
+from anomalib.models.components import AnomalyMapGenerator
 from nearness import TorchNeighbors, NearestNeighbors
 from safecheck import typecheck
 from torch import nn
+from torchvision.models.feature_extraction import create_feature_extractor
 
-from anomalib.models.components import TimmFeatureExtractor, AnomalyMapGenerator
 from .anomaly_detector import KNNDetector, DistanceDistribution
 
 __all__ = [
@@ -16,6 +19,18 @@ PatchDistDefaultIndex = TorchNeighbors()
 PatchDistDefaultDetector = KNNDetector(n_neighbors=3)
 
 
+class PatchDistBackbone(enum.Enum):
+    sam2 = "SAM2"
+    timm = "TIMM"
+
+
+def get_backbone_kind(backbone: str) -> PatchDistBackbone:
+    if backbone.startswith("facebook/sam2"):
+        return PatchDistBackbone.sam2
+
+    return PatchDistBackbone.timm
+
+
 class PatchDistModel(nn.Module):
     """PatchDist Module.
 
@@ -24,17 +39,14 @@ class PatchDistModel(nn.Module):
         layer (str): Layer used for feature extraction
         backbone (str, optional): Pre-trained model backbone.
             Defaults to ``resnet18``.
-        pre_trained (bool, optional): Boolean to check whether to use a pre_trained backbone.
-            Defaults to ``True``.
     """
 
     @typecheck
     def __init__(
         self,
         input_size: tuple[int, int],
-        layer: str = "layer2",
+        layer: str | None = "layer2",
         backbone: str = "wide_resnet50_2",
-        pre_trained: bool = True,
         index: NearestNeighbors = PatchDistDefaultIndex,
         detector: KNNDetector = PatchDistDefaultDetector,
         score_quantile: float = 0.99,
@@ -42,18 +54,33 @@ class PatchDistModel(nn.Module):
     ) -> None:
         super().__init__()
         self.backbone = backbone
+        self.backbone_kind = get_backbone_kind(backbone)
         self.layer = layer
         self.input_size = input_size
         self.index = index
         self.detector = detector
         self.score_quantile = score_quantile
         self.score_distribution = score_distribution
-        self.feature_extractor = TimmFeatureExtractor(
-            backbone=self.backbone,
-            pre_trained=pre_trained,
-            layers=[layer]
-        )
+        self.feature_extractor = self._get_feature_extractor(self.backbone, layer)
         self.anomaly_map_generator = AnomalyMapGenerator(sigma=3).eval()
+
+    def _get_feature_extractor(self, backbone: str, layer: str | None):
+        if self.backbone_kind == PatchDistBackbone.sam2:
+            try:
+                from sam2.sam2_image_predictor import SAM2ImagePredictor
+                predictor = SAM2ImagePredictor.from_pretrained(backbone, device="cpu")
+                model = predictor.model.image_encoder
+
+            except ModuleNotFoundError:
+                msg = (f"Cannot use backbone '{backbone}', if the SAM2 package is not installed, "
+                       f"make sure to install SAM2 from https://github.com/facebookresearch/sam2.")
+                raise ModuleNotFoundError(msg)
+
+        if self.backbone_kind == PatchDistBackbone.timm:
+            # cannot use features only, not available for vision transformers (for example)
+            model = timm.create_model(self.backbone, pretrained=True)
+
+        return model if layer is None else create_feature_extractor(model, return_nodes=[layer])
 
     def extract_features(self, x: torch.Tensor) -> torch.Tensor:
         return self.feature_extractor(x)[self.layer]
@@ -98,6 +125,9 @@ class PatchDistModel(nn.Module):
             self.score_distribution.update(embedding.cpu().numpy(), self.index)
 
         # normalize the patch-wise scores if a normalization distribution is available
+        # note that, for a given first batch used for normalization of size >= ``score_distribution.min_samples``,
+        # the entire batch is normalized, but for given batches with ``use_for_normalization=True`` of
+        # total size < ``score_distribution.min_samples``, the returned values are un-normalized
         if self.score_distribution is not None and self.score_distribution.is_available:
             # if an update has been performed, we (re-) compute the distribution, otherwise use the computed value
             distribution = self.score_distribution.get(recompute=use_for_normalization)

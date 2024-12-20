@@ -42,7 +42,7 @@ class KNNDetector(Detector):
     def predict(self, x: np.ndarray, index: NearestNeighbors) -> np.ndarray:
         assert index.is_fitted
         dist = query_safe_distances(x, index, n_neighbors=self.n_neighbors)
-        logger.info("KNN prediction: %s %s %s %s", dist.min(), dist.mean(), dist.max(), dist.std())
+        logger.info("KNN prediction: %s (min) %s (mean) %s (max) %s (std)", dist.min(), dist.mean(), dist.max(), dist.std())
 
         if self.reduction == "max":
             return dist[:, -1]

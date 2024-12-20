@@ -28,16 +28,13 @@ class PatchDist(MemoryBankMixin, AnomalyModule):
             Defaults to ``wide_resnet50_2``.
         layer (str): Layer to extract features from the backbone CNN
             Defaults to ``["layer2", "layer3"]``.
-        pre_trained (bool, optional): Boolean to check whether to use a pre_trained backbone.
-            Defaults to ``True``.
     """
 
     def __init__(
         self,
         input_size: tuple[int, int] = (224, 224),
         backbone: str = "wide_resnet50_2",
-        layer: str = "layer2",
-        pre_trained: bool = True,
+        layer: str | None = "layer2",
         index: NearestNeighbors = PatchDistDefaultIndex,
         detector: KNNDetector = PatchDistDefaultDetector,
         score_distribution: DistanceDistribution | None = None,
@@ -62,7 +59,6 @@ class PatchDist(MemoryBankMixin, AnomalyModule):
             input_size=input_size,
             layer=layer,
             backbone=backbone,
-            pre_trained=pre_trained,
             index=index,
             detector=detector,
             score_quantile=score_quantile,
@@ -245,7 +241,8 @@ class PatchDist(MemoryBankMixin, AnomalyModule):
         # https://stackoverflow.com/questions/384991/what-is-the-best-image-downscaling-algorithm-quality-wise
         return Compose(
             [
-                Resize(self.model.input_size, interpolation=InterpolationMode.LANCZOS, antialias=False),
+                Resize(self.model.input_size, antialias=True),
+                # Resize(self.model.input_size, interpolation=InterpolationMode.LANCZOS, antialias=False),
                 Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
             ],
         )
