@@ -427,7 +427,7 @@ class ExportMixin:
         cached_metadata: dict[str, Number | torch.Tensor] = {}
         for threshold_name in ("image_threshold", "pixel_threshold"):
             if hasattr(self, threshold_name):
-                cached_metadata[threshold_name] = getattr(self, threshold_name).cpu().value.item()
+                cached_metadata[threshold_name] = getattr(self, threshold_name).cpu().value
         if hasattr(self, "normalization_metrics") and self.normalization_metrics.state_dict() is not None:
             for key, value in self.normalization_metrics.state_dict().items():
                 cached_metadata[key] = value.cpu()
