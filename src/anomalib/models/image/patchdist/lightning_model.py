@@ -40,15 +40,28 @@ class PatchDist(MemoryBankMixin, AnomalyModule):
         score_distribution: DistanceDistribution | None = None,
         score_quantile: float = 0.99,
         incremental_indexing: bool = False,
-        coreset_sampling_ratio: float | tuple[float | None, float | None, float | None] | None = (None, 0.1, None),
+        coreset_sampling_ratio_start: float | None = None,
+        coreset_sampling_ratio_step: float | None = 0.1,
+        coreset_sampling_ratio_end: float | None = None,
         coreset_sampling_type: Literal["random", "kcenter", "kmedoids"] = "kcenter",
         coreset_sampling_device: Literal["initial", "cpu", "auto"] = "initial"
     ) -> None:
         super().__init__()
-
-        # make sure the coreset sampling ratio is a tuple for train_start, train_step and train_end coreset sampling
-        ratio = self.get_coreset_sampling_ratio(coreset_sampling_ratio)
-        self.coreset_sampling_ratio_start, self.coreset_sampling_ratio_step, self.coreset_sampling_ratio_end = ratio
+        is_valid_coreset_value = lambda value: (isinstance(value, float) and (0 < value < 1)) or value is None
+        if not (
+            is_valid_coreset_value(coreset_sampling_ratio_start)
+            and is_valid_coreset_value(coreset_sampling_ratio_step)
+            and is_valid_coreset_value(coreset_sampling_ratio_end)
+        ):
+            msg = (
+                f"The coreset sampling ratio must be a floating point number x with 0 < x < 1 or None, but found "
+                f"start={coreset_sampling_ratio_start}, step={coreset_sampling_ratio_step}, "
+                f"end={coreset_sampling_ratio_end:}."
+            )
+            raise ValueError(msg)
+        self.coreset_sampling_ratio_start = coreset_sampling_ratio_start
+        self.coreset_sampling_ratio_step = coreset_sampling_ratio_step
+        self.coreset_sampling_ratio_end = coreset_sampling_ratio_end
         self.coreset_sampling_type = coreset_sampling_type
         # auto = use the lightning device for start and step-sampling and cpu for end sampling
         # initial = use the lightning device for all sampling
@@ -85,7 +98,7 @@ class PatchDist(MemoryBankMixin, AnomalyModule):
     def get_coreset_sampling_ratio(
         input: float | None | tuple[float | None, float | None, float | None]
     ) -> tuple[float | None, float | None, float | None]:
-        is_valid_value = lambda value: isinstance(value, float) or isinstance(value, int) or value is None
+
         msg = f"Input for coreset sampling ratio is invalid, expected float, None or 3-tuple, but found {input}."
         if isinstance(input, tuple) and len(input) == 3:  # a valid tuple
             for ratio in input:
