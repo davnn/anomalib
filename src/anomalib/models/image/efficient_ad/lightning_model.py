@@ -62,6 +62,7 @@ class EfficientAd(AnomalyModule):
     def __init__(
         self,
         imagenet_dir: Path | str = "./datasets/imagenette",
+        pre_trained_dir: Path | str = "./pre_trained",
         teacher_out_channels: int = 384,
         model_size: EfficientAdModelSize | str = EfficientAdModelSize.S,
         lr: float = 0.0001,
@@ -72,6 +73,7 @@ class EfficientAd(AnomalyModule):
         super().__init__()
 
         self.imagenet_dir = Path(imagenet_dir)
+        self.pre_trained_dir = Path(pre_trained_dir)
         if not isinstance(model_size, EfficientAdModelSize):
             model_size = EfficientAdModelSize(model_size)
         self.model_size: EfficientAdModelSize = model_size
@@ -87,12 +89,11 @@ class EfficientAd(AnomalyModule):
 
     def prepare_pretrained_model(self) -> None:
         """Prepare the pretrained teacher model."""
-        pretrained_models_dir = Path("./pre_trained/")
-        if not (pretrained_models_dir / "efficientad_pretrained_weights").is_dir():
-            download_and_extract(pretrained_models_dir, WEIGHTS_DOWNLOAD_INFO)
+        if not (self.pre_trained_dir / "efficientad_pretrained_weights").is_dir():
+            download_and_extract(self.pre_trained_dir, WEIGHTS_DOWNLOAD_INFO)
         model_size_str = self.model_size.value if isinstance(self.model_size, EfficientAdModelSize) else self.model_size
         teacher_path = (
-            pretrained_models_dir / "efficientad_pretrained_weights" / f"pretrained_teacher_{model_size_str}.pth"
+            self.pre_trained_dir / "efficientad_pretrained_weights" / f"pretrained_teacher_{model_size_str}.pth"
         )
         logger.info(f"Load pretrained teacher model from {teacher_path}")
         self.model.teacher.load_state_dict(torch.load(teacher_path, map_location=torch.device(self.device)))
