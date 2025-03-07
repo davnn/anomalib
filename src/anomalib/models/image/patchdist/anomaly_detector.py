@@ -56,16 +56,18 @@ class KNNDetector(Detector):
 def query_safe_distances(x: np.ndarray, index: NearestNeighbors, n_neighbors: int) -> np.ndarray:
     idx, dist = index.query_batch(x, n_neighbors=n_neighbors)
 
+    # some indexing structures might return -1 indices if no element was found
     if np.any(missing_idx := (idx == -1)):
-        # some indexing structures might return -1 indices if no element was found
-        dist[missing_idx] = np.nan
-
-        # TODO(David): Evaluate if np.max over all axis is a better choice
         # assign each missing element the max distance (for later mean and median)
-        max_value = np.nanmax(dist, axis=1, keepdims=True)
-        dist = np.where(missing_idx, max_value, dist)
+        # note that the max value is chosen over all samples, because it might be that there are only NaN
+        # values for a single sample (all-NaN-slice)
+        # the risk here is that the max value over all samples disturbes the anomaly result of the sample,
+        # but assuming that a NaN value is even worse it might be a reasonable assumption
+        dist[missing_idx] = dist[~missing_idx].max()
 
-    return np.maximum(0.0, dist)  # prevent possible negative distances (e.g. rounding errors)
+    # prevent possible negative distances (e.g. rounding errors)
+    # this is ~2x faster than np.maximum(dist, 0.0) because it does not copy
+    return np.clip(dist, a_min=0.0, a_max=None, out=dist)
 
 
 class LOFDetector(Detector):
