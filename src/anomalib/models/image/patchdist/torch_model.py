@@ -52,7 +52,7 @@ class PatchDistModel(nn.Module):
         detector: KNNDetector = PatchDistDefaultDetector,
         score_quantile: float = 0.99,
         score_distribution: DistanceDistribution | None = None,
-        cache_dir: Path | None = None,
+        cache_dir: Path | str | None = None,
     ) -> None:
         super().__init__()
         self.backbone = backbone
@@ -67,7 +67,7 @@ class PatchDistModel(nn.Module):
         self.feature_extractor = self._get_feature_extractor(self.backbone, layer, self.cache_dir)
         self.anomaly_map_generator = AnomalyMapGenerator(sigma=3).eval()
 
-    def _get_feature_extractor(self, backbone: str, layer: str | None, cache_dir: Path | None):
+    def _get_feature_extractor(self, backbone: str, layer: str | None, cache_dir: Path | str | None):
         if self.backbone_kind == PatchDistBackbone.sam2:
             try:
                 from sam2.sam2_image_predictor import SAM2ImagePredictor
