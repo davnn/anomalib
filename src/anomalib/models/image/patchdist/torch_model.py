@@ -1,5 +1,6 @@
 """PyTorch model for the PatchDist model implementation."""
 import enum
+from pathlib import Path
 
 import torch
 import timm
@@ -50,21 +51,23 @@ class PatchDistModel(nn.Module):
         index: NearestNeighbors = PatchDistDefaultIndex,
         detector: KNNDetector = PatchDistDefaultDetector,
         score_quantile: float = 0.99,
-        score_distribution: DistanceDistribution | None = None
+        score_distribution: DistanceDistribution | None = None,
+        cache_dir: Path | None = None,
     ) -> None:
         super().__init__()
         self.backbone = backbone
         self.backbone_kind = get_backbone_kind(backbone)
+        self.cache_dir = cache_dir
         self.layer = layer
         self.input_size = input_size
         self.index = index
         self.detector = detector
         self.score_quantile = score_quantile
         self.score_distribution = score_distribution
-        self.feature_extractor = self._get_feature_extractor(self.backbone, layer)
+        self.feature_extractor = self._get_feature_extractor(self.backbone, layer, self.cache_dir)
         self.anomaly_map_generator = AnomalyMapGenerator(sigma=3).eval()
 
-    def _get_feature_extractor(self, backbone: str, layer: str | None):
+    def _get_feature_extractor(self, backbone: str, layer: str | None, cache_dir: Path | None):
         if self.backbone_kind == PatchDistBackbone.sam2:
             try:
                 from sam2.sam2_image_predictor import SAM2ImagePredictor
@@ -78,7 +81,7 @@ class PatchDistModel(nn.Module):
 
         if self.backbone_kind == PatchDistBackbone.timm:
             # cannot use features only, not available for vision transformers (for example)
-            model = timm.create_model(self.backbone, pretrained=True)
+            model = timm.create_model(self.backbone, pretrained=True, cache_dir=cache_dir)
 
         return model if layer is None else create_feature_extractor(model, return_nodes=[layer])
 

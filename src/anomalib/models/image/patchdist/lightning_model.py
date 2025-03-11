@@ -2,6 +2,7 @@
 """
 
 import logging
+from pathlib import Path
 from typing import Any, Literal, Dict
 
 import numpy as np
@@ -44,7 +45,8 @@ class PatchDist(MemoryBankMixin, AnomalyModule):
         coreset_sampling_ratio_step: float | None = 0.1,
         coreset_sampling_ratio_end: float | None = None,
         coreset_sampling_type: Literal["random", "kcenter", "kmedoids"] = "kcenter",
-        coreset_sampling_device: Literal["initial", "cpu", "auto"] = "initial"
+        coreset_sampling_device: Literal["initial", "cpu", "auto"] = "initial",
+        cache_dir: Path | None = None
     ) -> None:
         super().__init__()
         is_valid_coreset_value = lambda value: (isinstance(value, float) and (0 < value < 1)) or value is None
@@ -75,7 +77,8 @@ class PatchDist(MemoryBankMixin, AnomalyModule):
             index=index,
             detector=detector,
             score_quantile=score_quantile,
-            score_distribution=score_distribution
+            score_distribution=score_distribution,
+            cache_dir=cache_dir,
         )
         self.embeddings: list[torch.Tensor] = []
 
