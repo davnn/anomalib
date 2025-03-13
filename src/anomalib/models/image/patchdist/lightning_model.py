@@ -46,7 +46,6 @@ class PatchDist(MemoryBankMixin, AnomalyModule):
         coreset_sampling_ratio_end: float | None = None,
         coreset_sampling_type: Literal["random", "kcenter", "kmedoids"] = "kcenter",
         coreset_sampling_device: Literal["initial", "cpu", "auto"] = "initial",
-        cache_dir: Path | str | None = None
     ) -> None:
         super().__init__()
         is_valid_coreset_value = lambda value: (isinstance(value, float) and (0 < value < 1)) or value is None
@@ -78,7 +77,6 @@ class PatchDist(MemoryBankMixin, AnomalyModule):
             detector=detector,
             score_quantile=score_quantile,
             score_distribution=score_distribution,
-            cache_dir=cache_dir,
         )
         self.embeddings: list[torch.Tensor] = []
 
