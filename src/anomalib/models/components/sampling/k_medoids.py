@@ -14,7 +14,7 @@ except ImportError:
     msg = ("K-Medoids sampling requires the 'kmedoids' package to be installed "
            ", you can install the package using 'pip install kmedoids', or using"
            "'conda install conda-forge::kmedoids'.")
-    logger.exception(msg)
+    logger.debug(msg)
 
 import torch
 from anomalib.models.components.dimensionality_reduction import SparseRandomProjection
