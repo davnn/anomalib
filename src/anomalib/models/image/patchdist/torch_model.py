@@ -4,11 +4,14 @@ from pathlib import Path
 
 import torch
 import timm
+import warnings
 from anomalib.models.components import AnomalyMapGenerator
+from fontTools.misc.cython import returns
 from nearness import TorchNeighbors, NearestNeighbors
 from safecheck import typecheck
 from torch import nn
 from torchvision.models.feature_extraction import create_feature_extractor
+from torchvision.models import get_model
 
 from .anomaly_detector import KNNDetector, DistanceDistribution
 
@@ -23,11 +26,15 @@ PatchDistDefaultDetector = KNNDetector(n_neighbors=3)
 class PatchDistBackbone(enum.Enum):
     sam2 = "SAM2"
     timm = "TIMM"
+    torchvision = "torchvision"
 
 
 def get_backbone_kind(backbone: str) -> PatchDistBackbone:
     if backbone.startswith("facebook/sam2"):
         return PatchDistBackbone.sam2
+
+    if backbone.startswith("torchvision/"):
+        return PatchDistBackbone.torchvision
 
     return PatchDistBackbone.timm
 
@@ -48,6 +55,7 @@ class PatchDistModel(nn.Module):
         input_size: tuple[int, int],
         layer: str | None = "layer2",
         backbone: str = "wide_resnet50_2",
+        backbone_path: str | Path | None = None,
         index: NearestNeighbors = PatchDistDefaultIndex,
         detector: KNNDetector = PatchDistDefaultDetector,
         score_quantile: float = 0.99,
@@ -55,6 +63,7 @@ class PatchDistModel(nn.Module):
     ) -> None:
         super().__init__()
         self.backbone = backbone
+        self.backbone_path = backbone_path
         self.backbone_kind = get_backbone_kind(backbone)
         self.layer = layer
         self.input_size = input_size
@@ -66,7 +75,11 @@ class PatchDistModel(nn.Module):
         self.anomaly_map_generator = AnomalyMapGenerator(sigma=3).eval()
 
     def _get_feature_extractor(self, backbone: str, layer: str | None):
-        if self.backbone_kind == PatchDistBackbone.sam2:
+        kind = self.backbone_kind
+        if kind == PatchDistBackbone.sam2:
+            if self.backbone_path is not None:
+                warnings.warn("Cannot load SAM2 model from path, ignoring configured backbone path.")
+
             try:
                 from sam2.sam2_image_predictor import SAM2ImagePredictor
                 predictor = SAM2ImagePredictor.from_pretrained(backbone, device="cpu")
@@ -77,9 +90,9 @@ class PatchDistModel(nn.Module):
                        f"make sure to install SAM2 from https://github.com/facebookresearch/sam2.")
                 raise ModuleNotFoundError(msg)
 
-        if self.backbone_kind == PatchDistBackbone.timm:
+        if kind == PatchDistBackbone.timm or kind == PatchDistBackbone.torchvision:
             # cannot use features only, not available for vision transformers (for example)
-            model = timm.create_model(self.backbone, pretrained=True)
+            model = load_model(model_name=self.backbone, model_path=self.backbone_path, model_kind=kind)
 
         return model if layer is None else create_feature_extractor(model, return_nodes=[layer])
 
@@ -162,3 +175,21 @@ class PatchDistModel(nn.Module):
         """
         embedding_size = embedding.size(1)
         return embedding.permute(0, 2, 3, 1).reshape(-1, embedding_size)
+
+
+def load_model(model_name: str, model_path: str | Path | None, model_kind: PatchDistBackbone) -> nn.Module:
+    # cannot use features only for timm, not available for vision transformers (for example)
+    load_fn = timm.create_model if model_kind == PatchDistBackbone.timm else get_model
+    model_name = model_name.replace(f"{model_kind.value}/", "")
+
+    if model_path is not None:
+        model = load_fn(self.backbone)
+        state_dict = torch.load(model_path)
+        model.load_state_dict(state_dict)
+        model.eval()
+        return model
+
+    # catch deprecation warning loading model with pretrained=True for torchvision
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        return load_fn(model_name, pretrained=True)

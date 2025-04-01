@@ -35,6 +35,7 @@ class PatchDist(MemoryBankMixin, AnomalyModule):
         self,
         input_size: tuple[int, int] = (224, 224),
         backbone: str = "wide_resnet50_2",
+        backbone_path: str | Path | None = None,
         layer: str | None = "layer2",
         index: NearestNeighbors = PatchDistDefaultIndex,
         detector: KNNDetector = PatchDistDefaultDetector,
