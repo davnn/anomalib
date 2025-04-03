@@ -1,5 +1,6 @@
 """PyTorch model for the PatchDist model implementation."""
 import enum
+from importlib.metadata import PathDistribution
 from pathlib import Path
 
 import torch
@@ -14,6 +15,7 @@ from torchvision.models.feature_extraction import create_feature_extractor
 from torchvision.models import get_model
 
 from .anomaly_detector import KNNDetector, DistanceDistribution
+from .model_registry import get_local_model
 
 __all__ = [
     "PatchDistModel",
@@ -27,6 +29,7 @@ class PatchDistBackbone(enum.Enum):
     sam2 = "SAM2"
     timm = "TIMM"
     torchvision = "torchvision"
+    local = "local"
 
 
 def get_backbone_kind(backbone: str) -> PatchDistBackbone:
@@ -35,6 +38,9 @@ def get_backbone_kind(backbone: str) -> PatchDistBackbone:
 
     if backbone.startswith("torchvision/"):
         return PatchDistBackbone.torchvision
+
+    if backbone.startswith("local/"):
+        return PatchDistBackbone.local
 
     return PatchDistBackbone.timm
 
@@ -90,14 +96,15 @@ class PatchDistModel(nn.Module):
                        f"make sure to install SAM2 from https://github.com/facebookresearch/sam2.")
                 raise ModuleNotFoundError(msg)
 
-        if kind == PatchDistBackbone.timm or kind == PatchDistBackbone.torchvision:
+        if kind == PatchDistBackbone.timm or kind == PatchDistBackbone.torchvision or kind == PatchDistBackbone.local:
             # cannot use features only, not available for vision transformers (for example)
             model = load_model(model_name=self.backbone, model_path=self.backbone_path, model_kind=kind)
 
         return model if layer is None else create_feature_extractor(model, return_nodes=[layer])
 
     def extract_features(self, x: torch.Tensor) -> torch.Tensor:
-        return self.feature_extractor(x)[self.layer]
+        res = self.feature_extractor(x)
+        return res if self.layer is None else res[self.layer]
 
     @torch.inference_mode
     def forward(
@@ -179,7 +186,11 @@ class PatchDistModel(nn.Module):
 
 def load_model(model_name: str, model_path: str | Path | None, model_kind: PatchDistBackbone) -> nn.Module:
     # cannot use features only for timm, not available for vision transformers (for example)
-    load_fn = timm.create_model if model_kind == PatchDistBackbone.timm else get_model
+    load_fn = {
+        PatchDistBackbone.timm: timm.create_model,
+        PatchDistBackbone.torchvision: get_model,
+        PatchDistBackbone.local: get_local_model
+    }[model_kind]
     model_name = model_name.replace(f"{model_kind.value}/", "")
 
     if model_path is not None:
