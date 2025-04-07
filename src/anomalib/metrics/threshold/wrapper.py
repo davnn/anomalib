@@ -61,6 +61,7 @@ class WrapperThreshold(BaseThreshold):
 
         if len(self.scores) > 0:
             scores = torch.cat(self.scores, dim=0)[self.ignore_first_n_values:]  # ignore first values inclusive
+            logger.info("Scores (normalize): %s (min) %s (mean) %s (max) %s (std)", scores.min(), scores.mean(), scores.max(), scores.std())
             return threshold(scores, method=self.method, return_components=True, **self.method_kwargs)
         else:
             raise ValueError("Can not compute components without scores.")
