@@ -6,5 +6,6 @@
 from .k_center_greedy import KCenterGreedy
 from .k_medoids import KMedoids
 from .random import Random
+from .uncertainty import Uncertainty
 
-__all__ = ["KCenterGreedy", "KMedoids", "Random"]
+__all__ = ["KCenterGreedy", "KMedoids", "Random", "Uncertainty"]
