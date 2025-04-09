@@ -2,6 +2,7 @@
 """
 
 import logging
+import warnings
 from pathlib import Path
 from typing import Any, Literal, Dict
 
@@ -12,7 +13,7 @@ from nearness import NearestNeighbors
 from torchvision.transforms.v2 import Compose, Normalize, Transform, Resize, InterpolationMode
 
 from anomalib import LearningType
-from anomalib.models.components import AnomalyModule, MemoryBankMixin, KCenterGreedy, KMedoids, Random
+from anomalib.models.components import AnomalyModule, MemoryBankMixin, KCenterGreedy, KMedoids, Random, Uncertainty
 from .anomaly_detector import KNNDetector, DistanceDistribution
 from .torch_model import PatchDistModel, PatchDistDefaultDetector, PatchDistDefaultIndex
 
@@ -42,25 +43,13 @@ class PatchDist(MemoryBankMixin, AnomalyModule):
         score_distribution: DistanceDistribution | None = None,
         score_quantile: float = 0.99,
         incremental_indexing: bool = False,
-        coreset_sampling_ratio_start: float | None = None,
-        coreset_sampling_ratio_step: float | None = 0.1,
-        coreset_sampling_ratio_end: float | None = None,
-        coreset_sampling_type: Literal["random", "kcenter", "kmedoids"] = "kcenter",
+        coreset_sampling_ratio_start: float | int | None = None,
+        coreset_sampling_ratio_step: float | int | None = 0.1,
+        coreset_sampling_ratio_end: float | int | None = None,
+        coreset_sampling_type: Literal["random", "kcenter", "kmedoids", "uncertainty"] = "kcenter",
         coreset_sampling_device: Literal["initial", "cpu", "auto"] = "initial",
     ) -> None:
         super().__init__()
-        is_valid_coreset_value = lambda value: (isinstance(value, float) and (0 < value < 1)) or value is None
-        if not (
-            is_valid_coreset_value(coreset_sampling_ratio_start)
-            and is_valid_coreset_value(coreset_sampling_ratio_step)
-            and is_valid_coreset_value(coreset_sampling_ratio_end)
-        ):
-            msg = (
-                f"The coreset sampling ratio must be a floating point number x with 0 < x < 1 or None, but found "
-                f"start={coreset_sampling_ratio_start}, step={coreset_sampling_ratio_step}, "
-                f"end={coreset_sampling_ratio_end:}."
-            )
-            raise ValueError(msg)
         self.coreset_sampling_ratio_start = coreset_sampling_ratio_start
         self.coreset_sampling_ratio_step = coreset_sampling_ratio_step
         self.coreset_sampling_ratio_end = coreset_sampling_ratio_end
@@ -97,24 +86,15 @@ class PatchDist(MemoryBankMixin, AnomalyModule):
         raise AssertionError(f"Invalid coreset sampling device {self.coreset_sampling_device}")
 
     @staticmethod
-    def get_coreset_sampling_ratio(
-        input: float | None | tuple[float | None, float | None, float | None]
-    ) -> tuple[float | None, float | None, float | None]:
-
-        msg = f"Input for coreset sampling ratio is invalid, expected float, None or 3-tuple, but found {input}."
-        if isinstance(input, tuple) and len(input) == 3:  # a valid tuple
-            for ratio in input:
-                assert is_valid_value(ratio), msg
-            return input
-        elif is_valid_value(input):  # a valid value
-            return (input, input, input)
-        else:
-            raise AssertionError(msg)
-
-    @staticmethod
     def determine_coreset_ratio(coreset_ratio: int | float, embedding: torch.Tensor):
-        if isinstance(coreset_ratio, int):
-            coreset_ratio = coreset_ratio / len(embedding)
+        coreset_ratio = coreset_ratio / len(embedding) if isinstance(coreset_ratio, int) else coreset_ratio
+        is_valid_ratio = lambda value: (isinstance(value, float) and (0 < value < 1)) or value is None
+        if not is_valid_ratio(coreset_ratio):
+            msg = (
+                f"The coreset sampling ratio must be a floating point number x with 0 < x < 1 or None, "
+                f"but found {coreset_ratio}."
+            )
+            raise ValueError(msg)
 
         return coreset_ratio
 
@@ -133,6 +113,19 @@ class PatchDist(MemoryBankMixin, AnomalyModule):
         This is not necesary for most indexing structures, but some require a training stage, see:
         <https://github.com/facebookresearch/faiss/wiki/Faster-search>
         """
+        if self.coreset_sampling_type == "uncertainty" and not self.incremental_indexing:
+            msg = "Cannot use uncertainty sampling when incremental_indexing=False, setting incremental_indexing=True."
+            warnings.warn(msg)
+            self.incremental_indexing = True
+
+        if self.coreset_sampling_ratio_start is not None and not self.incremental_indexing:
+            msg = "Cannot use coreset sampling on start of training when incremental indexing is False, ignoring."
+            warnings.warn(msg)
+
+        # coreset sampling at start currently uses (hardcoded) random sampling to determine the data distribution
+        # and switches back to the original coreset sampling method
+        original_coreset_sampling_type = self.coreset_sampling_type
+        self.coreset_sampling_type = "random"
         if self.incremental_indexing:
             embeddings = []
             for item in self.trainer.datamodule.train_data:
@@ -146,9 +139,13 @@ class PatchDist(MemoryBankMixin, AnomalyModule):
 
                 embeddings.append(embedding.cpu())
 
-            embeddings = torch.vstack(embeddings)
+            embeddings = torch.vstack(embeddings).numpy()
             logger.info(f"Training index with data of size {embeddings.shape}.")
-            self.model.index.fit(embeddings.numpy())
+            self.model.index.fit(embeddings)
+            self.model.index.add(embeddings)
+
+        # reset to original coreset sampling type
+        self.coreset_sampling_type = original_coreset_sampling_type
 
     @torch.inference_mode()
     def training_step(self, batch: dict[str, str | torch.Tensor], *args, **kwargs) -> None:
@@ -166,8 +163,7 @@ class PatchDist(MemoryBankMixin, AnomalyModule):
         embedding = self.model(batch["image"].to(self.device))
 
         # Log the embedding size for the first batch
-        is_first_batch = self.trainer.global_step == 0
-        if is_first_batch:
+        if self.trainer.global_step == 0:
             logger.info(f"First training batch with embeddings {embedding.shape}")
 
         # Coreset sample the embedding
@@ -206,8 +202,11 @@ class PatchDist(MemoryBankMixin, AnomalyModule):
         self.model.detector.fit(embeddings, self.model.index)
 
     @torch.inference_mode()
-    def validation_step(self, batch: dict[str, str | torch.Tensor], use_for_normalization: bool = True) -> STEP_OUTPUT:
+    def validation_step(self, batch: dict[str, str | torch.Tensor], *args: Any,
+                        use_for_normalization: bool = True) -> STEP_OUTPUT:
         """Get batch of anomaly maps from input image batch.
+
+        Args are any additional (unused) arguments provided by anomalib.
 
         Args:
             batch (dict[str, str | torch.Tensor]): Batch containing image filename, image, label and mask
@@ -265,7 +264,7 @@ class PatchDist(MemoryBankMixin, AnomalyModule):
     @property
     def trainer_arguments(self) -> dict[str, Any]:
         """Return PatchDist trainer arguments."""
-        return {"gradient_clip_val": 0, "max_epochs": 1, "num_sanity_val_steps": 0}
+        return {"gradient_clip_val": 0, "num_sanity_val_steps": 0}
 
     @property
     def learning_type(self) -> LearningType:
@@ -289,6 +288,13 @@ class PatchDist(MemoryBankMixin, AnomalyModule):
             sampler = KMedoids(embedding=embedding, sampling_ratio=sampling_ratio)
         elif self.coreset_sampling_type == "random":
             sampler = Random(embedding=embedding, sampling_ratio=sampling_ratio)
+        elif self.coreset_sampling_type == "uncertainty":
+            sampler = Uncertainty(
+                embedding=embedding,
+                sampling_ratio=sampling_ratio,
+                detector=self.model.detector,
+                index=self.model.index
+            )
         else:
             raise AssertionError(f"Coreset sampling type {self.coreset_sampling_type} does not exist.")
 
