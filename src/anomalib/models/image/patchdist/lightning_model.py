@@ -223,7 +223,7 @@ class PatchDist(MemoryBankMixin, AnomalibModule):
         """
         # Get anomaly maps and predicted scores from the model.
         predictions = self.model(batch.image.to(self.device), use_for_normalization=use_for_normalization)
-        return batch.update(**predictions._asdict())
+        return batch.update(**predictions)
 
     def predict_step(
         self,
