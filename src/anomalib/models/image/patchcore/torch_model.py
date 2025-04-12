@@ -41,9 +41,7 @@ from torch import nn
 from torch.nn import functional as F  # noqa: N812
 
 from anomalib.data import InferenceBatch
-from anomalib.models.components import DynamicBufferMixin, KCenterGreedy, TimmFeatureExtractor
-
-from .anomaly_map import AnomalyMapGenerator
+from anomalib.models.components import DynamicBufferMixin, KCenterGreedy, TimmFeatureExtractor, AnomalyMapGenerator
 
 if TYPE_CHECKING:
     from anomalib.data.utils.tiler import Tiler
