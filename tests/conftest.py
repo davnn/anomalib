@@ -1,6 +1,6 @@
 """Fixtures for the entire test suite."""
 
-# Copyright (C) 2023-2024 Intel Corporation
+# Copyright (C) 2023-2025 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
 import shutil
@@ -10,14 +10,14 @@ from tempfile import TemporaryDirectory
 
 import pytest
 
-from anomalib.data import ImageDataFormat, MVTec, VideoDataFormat
+from anomalib.data import ImageDataFormat, MVTecAD, VideoDataFormat
 from anomalib.engine import Engine
 from anomalib.models import get_model
 from tests.helpers.data import DummyImageDatasetGenerator, DummyVideoDatasetGenerator
 
 
 def _dataset_names() -> list[str]:
-    return [str(path.stem) for path in Path("configs/data").glob("*.yaml")]
+    return [str(path.stem) for path in Path("examples/configs/data").glob("*.yaml")]
 
 
 @pytest.fixture(scope="session")
@@ -87,7 +87,7 @@ def ckpt_path(project_path: Path, dataset_path: Path) -> Callable[[str], Path]:
         Since integration tests train all the models, model training occurs when running unit tests invididually.
         """
         model = get_model(model_name)
-        _ckpt_path = project_path / model.name / "MVTec" / "dummy" / "latest" / "weights" / "lightning" / "model.ckpt"
+        _ckpt_path = project_path / model.name / "MVTecAD" / "dummy" / "latest" / "weights" / "lightning" / "model.ckpt"
         if not _ckpt_path.exists():
             engine = Engine(
                 logger=False,
@@ -95,9 +95,16 @@ def ckpt_path(project_path: Path, dataset_path: Path) -> Callable[[str], Path]:
                 max_epochs=1,
                 devices=1,
             )
-            dataset = MVTec(root=dataset_path / "mvtec", category="dummy")
+            dataset = MVTecAD(root=dataset_path / "mvtecad", category="dummy")
             engine.fit(model=model, datamodule=dataset)
 
         return _ckpt_path
 
     return checkpoint
+
+
+def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+    """Automatically mark tests as 'cpu' unless they're marked as 'gpu'."""
+    for item in items:
+        if not any(marker.name == "gpu" for marker in item.iter_markers()):
+            item.add_marker(pytest.mark.cpu)

@@ -1,6 +1,6 @@
 """Test Helpers - Dataset."""
 
-# Copyright (C) 2023-2024 Intel Corporation
+# Copyright (C) 2023-2025 Intel Corporation
 # SPDX-License-Identifier: Apache-2.0
 
 from __future__ import annotations
@@ -18,7 +18,8 @@ from skimage import img_as_ubyte
 from skimage.io import imsave
 
 from anomalib.data import DataFormat
-from anomalib.data.utils import Augmenter, LabelName
+from anomalib.data.utils import LabelName
+from anomalib.data.utils.generators.perlin import PerlinAnomalyGenerator
 
 
 class DummyImageGenerator:
@@ -47,7 +48,7 @@ class DummyImageGenerator:
 
     def __init__(self, image_shape: tuple[int, int] = (256, 256), rng: np.random.Generator | None = None) -> None:
         self.image_shape = image_shape
-        self.augmenter = Augmenter()
+        self.augmenter = PerlinAnomalyGenerator()
         self.rng = rng if rng else np.random.default_rng()
 
     def generate_normal_image(self) -> tuple[np.ndarray, np.ndarray]:
@@ -72,6 +73,8 @@ class DummyImageGenerator:
 
         # Generate perturbation.
         perturbation, mask = self.augmenter.generate_perturbation(height=self.image_shape[0], width=self.image_shape[1])
+        perturbation = perturbation.cpu().numpy()
+        mask = mask.cpu().numpy()
 
         # Superimpose perturbation on image ``img``.
         abnormal_image = (image * (1 - mask) + (beta) * perturbation + (1 - beta) * image * (mask)).astype(np.uint8)
@@ -273,29 +276,29 @@ class DummyImageDatasetGenerator(DummyDatasetGenerator):
         seed (int, optional): Fixes seed if any number greater than 0 is provided. 0 means no seed. Defaults to 0.
 
     Examples:
-        To create an MVTec dataset with 10 training images and 10 testing images per category, use the following code.
-        >>> dataset_generator = DummyImageDatasetGenerator(data_format="mvtec", num_train=10, num_test=10)
+        To create an MVTecAD dataset with 10 training images and 10 testing images per category, use the following code.
+        >>> dataset_generator = DummyImageDatasetGenerator(data_format="mvtecad", num_train=10, num_test=10)
         >>> dataset_generator.generate_dataset()
 
         In order to provide a specific directory to save the dataset, use the ``root`` argument.
-        >>> dataset_generator = DummyImageDatasetGenerator(data_format="mvtec", root="./datasets/dummy")
+        >>> dataset_generator = DummyImageDatasetGenerator(data_format="mvtecad", root="./datasets/dummy")
         >>> dataset_generator.generate_dataset()
 
         It is also possible to use the generator as a context manager.
-        >>> with DummyImageDatasetGenerator(data_format="mvtec", num_train=10, num_test=10) as dataset_path:
+        >>> with DummyImageDatasetGenerator(data_format="mvtecad", num_train=10, num_test=10) as dataset_path:
         >>>     some_function()
 
-        To get the list of available datasets, use the ``DataFormat`` enum.
-        >>> from anomalib.data import DataFormat
-        >>> print(list(DataFormat))
+        To get the list of available image datasets, use the ``ImageDataFormat`` enum.
+        >>> from anomalib.data import ImageDataFormat
+        >>> print(list(ImageDataFormat))
 
-        Then you can use the ``DataFormat`` enum to generate the dataset.
-        >>> dataset_generator = DummyImageDatasetGenerator(data_format="beantech", num_train=10, num_test=10)
+        Then you can use the ``ImageDataFormat`` enum to generate the dataset.
+        >>> dataset_generator = DummyImageDatasetGenerator(data_format="btech", num_train=10, num_test=10)
     """
 
     def __init__(
         self,
-        data_format: DataFormat | str = "mvtec",
+        data_format: DataFormat | str = "mvtecad",
         root: Path | str | None = None,
         normal_category: str = "good",
         abnormal_category: str = "bad",
@@ -357,7 +360,7 @@ class DummyImageDatasetGenerator(DummyDatasetGenerator):
         with annotation_file.open("w") as f:
             json.dump(annotations, f)
 
-    def _generate_dummy_mvtec_dataset(
+    def _generate_dummy_mvtecad_dataset(
         self,
         normal_dir: str = "good",
         abnormal_dir: str | None = None,
@@ -389,10 +392,29 @@ class DummyImageDatasetGenerator(DummyDatasetGenerator):
             mask_filename = mask_path / f"{i:03}{mask_suffix}{mask_extension}"
             self.image_generator.generate_image(label, image_filename, mask_filename)
 
+    def _generate_dummy_folder_dataset(self) -> None:
+        """Generate dummy folder dataset in a temporary directory."""
+        # folder names
+        normal_dir = self.root / self.normal_category
+        abnormal_dir = self.root / self.abnormal_category
+        mask_dir = self.root / "masks"
+
+        # generate images
+        for i in range(self.num_train):
+            label = LabelName.NORMAL
+            image_filename = normal_dir / f"{self.normal_category}_{i:03}.png"
+            self.image_generator.generate_image(label, image_filename)
+
+        for i in range(self.num_test):
+            label = LabelName.ABNORMAL
+            image_filename = abnormal_dir / f"{self.abnormal_category}_{i:03}.png"
+            mask_filename = mask_dir / image_filename.name
+            self.image_generator.generate_image(label, image_filename, mask_filename)
+
     def _generate_dummy_btech_dataset(self) -> None:
         """Generate dummy BeanTech dataset in directory using the same convention as BeanTech AD."""
         # BeanTech AD follows the same convention as MVTec AD.
-        self._generate_dummy_mvtec_dataset(normal_dir="ok", abnormal_dir="ko", mask_suffix="")
+        self._generate_dummy_mvtecad_dataset(normal_dir="ok", abnormal_dir="ko", mask_suffix="")
 
     def _generate_dummy_mvtec_3d_dataset(self) -> None:
         """Generate dummy MVTec 3D AD dataset in a temporary directory using the same convention as MVTec AD."""
@@ -444,7 +466,7 @@ class DummyImageDatasetGenerator(DummyDatasetGenerator):
         # Visa dataset on anomalib follows the same convention as MVTec AD.
         # The only difference is that the root directory has a subdirectory called "visa_pytorch".
         self.dataset_root = self.dataset_root.parent / "visa_pytorch"
-        self._generate_dummy_mvtec_dataset(normal_dir="good", abnormal_dir="bad", image_extension=".jpg")
+        self._generate_dummy_mvtecad_dataset(normal_dir="good", abnormal_dir="bad", image_extension=".jpg")
 
 
 class DummyVideoDatasetGenerator(DummyDatasetGenerator):
