@@ -105,6 +105,7 @@ __all__ = [
     "Ganomaly",
     "Padim",
     "Patchcore",
+    "PatchDist",
     "ReverseDistillation",
     "Stfpm",
     "Supersimplenet",
