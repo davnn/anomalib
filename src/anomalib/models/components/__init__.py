@@ -39,7 +39,7 @@ Example:
 from .base import AnomalibModule, BufferListMixin, DynamicBufferMixin, MemoryBankMixin
 from .dimensionality_reduction import PCA, SparseRandomProjection
 from .feature_extractors import TimmFeatureExtractor
-from .filters import GaussianBlur2d
+from .filters import GaussianBlur2d, AnomalyMapGenerator
 from .sampling import KCenterGreedy, KMedoids, Random, Uncertainty
 from .stats import GaussianKDE, MultiVariateGaussian
 
@@ -58,4 +58,5 @@ __all__ = [
     "PCA",
     "SparseRandomProjection",
     "TimmFeatureExtractor",
+    "AnomalyMapGenerator"
 ]
