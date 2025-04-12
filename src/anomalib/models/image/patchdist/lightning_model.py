@@ -10,17 +10,23 @@ import numpy as np
 import torch
 from lightning.pytorch.utilities.types import STEP_OUTPUT
 from nearness import NearestNeighbors
-from torchvision.transforms.v2 import Compose, Normalize, Transform, Resize, InterpolationMode
+from torchvision.transforms.v2 import Compose, Normalize, Transform, Resize, InterpolationMode, CenterCrop
 
 from anomalib import LearningType
-from anomalib.models.components import AnomalyModule, MemoryBankMixin, KCenterGreedy, KMedoids, Random, Uncertainty
+from anomalib.post_processing import PostProcessor
+from anomalib.pre_processing import PreProcessor
+from anomalib.visualization import Visualizer
+from anomalib.metrics import Evaluator
+from anomalib.data import Batch
+from anomalib.models.components import AnomalibModule, MemoryBankMixin, KCenterGreedy, KMedoids, Random, Uncertainty
+
 from .anomaly_detector import KNNDetector, DistanceDistribution
 from .torch_model import PatchDistModel, PatchDistDefaultDetector, PatchDistDefaultIndex
 
 logger = logging.getLogger(__name__)
 
 
-class PatchDist(MemoryBankMixin, AnomalyModule):
+class PatchDist(MemoryBankMixin, AnomalibModule):
     """PatchcoreLightning Module to train PatchCore algorithm.
 
     Args:
@@ -48,8 +54,17 @@ class PatchDist(MemoryBankMixin, AnomalyModule):
         coreset_sampling_ratio_end: float | int | None = None,
         coreset_sampling_type: Literal["random", "kcenter", "kmedoids", "uncertainty"] = "kcenter",
         coreset_sampling_device: Literal["initial", "cpu", "auto"] = "initial",
+        pre_processor: torch.nn.Module | bool = True,
+        post_processor: torch.nn.Module | bool = True,
+        evaluator: Evaluator | bool = True,
+        visualizer: Visualizer | bool = True,
     ) -> None:
-        super().__init__()
+        super().__init__(
+            pre_processor=pre_processor,
+            post_processor=post_processor,
+            evaluator=evaluator,
+            visualizer=visualizer,
+        )
         self.coreset_sampling_ratio_start = coreset_sampling_ratio_start
         self.coreset_sampling_ratio_step = coreset_sampling_ratio_step
         self.coreset_sampling_ratio_end = coreset_sampling_ratio_end
@@ -247,19 +262,36 @@ class PatchDist(MemoryBankMixin, AnomalyModule):
         del batch_idx, dataloader_idx  # These variables are not used.
         return self.validation_step(batch, use_for_normalization=False)
 
-    def configure_transforms(self, image_size: tuple[int, int] | None = None) -> Transform:
-        # use default imagenet normalization with resizing to the given input size
-        # antialiasing is not relevant for LANCZOS mode, therefore false
-        # choosing the right interpolation algorithm appears to be black art, but LANCZOS
-        # should be a good option:
-        # https://stackoverflow.com/questions/384991/what-is-the-best-image-downscaling-algorithm-quality-wise
-        return Compose(
-            [
-                Resize(self.model.input_size, antialias=True),
-                # Resize(self.model.input_size, interpolation=InterpolationMode.LANCZOS, antialias=False),
-                Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-            ],
-        )
+    @classmethod
+    def configure_pre_processor(
+        cls,
+        image_size: tuple[int, int] | None = None,
+        center_crop_size: tuple[int, int] | None = None,
+    ) -> PreProcessor:
+        """TODO(David): Check if the correct image size is given here
+        """
+        image_size = image_size or (256, 256)
+        if center_crop_size is None:
+            # scale center crop size proportional to image size
+            height, width = image_size
+            center_crop_size = (int(height * (224 / 256)), int(width * (224 / 256)))
+
+        transform = Compose([
+            Resize(image_size, antialias=True),
+            CenterCrop(center_crop_size),
+            Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+        ])
+        return PreProcessor(transform=transform)
+
+    @staticmethod
+    def configure_post_processor() -> PostProcessor:
+        """Configure the default post-processor.
+
+        Returns:
+            PostProcessor: Post-processor for one-class models that
+                converts raw scores to anomaly predictions
+        """
+        return PostProcessor()
 
     @property
     def trainer_arguments(self) -> dict[str, Any]:
