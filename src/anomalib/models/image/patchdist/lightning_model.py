@@ -163,19 +163,10 @@ class PatchDist(MemoryBankMixin, AnomalibModule):
         self.coreset_sampling_type = original_coreset_sampling_type
 
     @torch.inference_mode()
-    def training_step(self, batch: dict[str, str | torch.Tensor], *args, **kwargs) -> None:
-        """Generate feature embedding of the batch.
-
-        Args:
-            batch (dict[str, str | torch.Tensor]): Batch containing image filename, image, label and mask
-            args: Additional arguments.
-            kwargs: Additional keyword arguments.
-
-        Returns:
-            dict[str, np.ndarray]: Embedding Vector
-        """
+    def training_step(self, batch: Batch, *args, **kwargs) -> None:
+        """Generate feature embedding of the batch."""
         del args, kwargs  # These variables are not used.
-        embedding = self.model(batch["image"].to(self.device))
+        embedding = self.model(batch.image.to(self.device))
 
         # Log the embedding size for the first batch
         if self.trainer.global_step == 0:
@@ -217,8 +208,7 @@ class PatchDist(MemoryBankMixin, AnomalibModule):
         self.model.detector.fit(embeddings, self.model.index)
 
     @torch.inference_mode()
-    def validation_step(self, batch: dict[str, str | torch.Tensor], *args: Any,
-                        use_for_normalization: bool = True) -> STEP_OUTPUT:
+    def validation_step(self, batch: Batch, *args: Any, use_for_normalization: bool = True, **kwargs) -> STEP_OUTPUT:
         """Get batch of anomaly maps from input image batch.
 
         Args are any additional (unused) arguments provided by anomalib.
@@ -232,17 +222,12 @@ class PatchDist(MemoryBankMixin, AnomalibModule):
             dict[str, Any]: Image filenames, test images, GT and predicted label/masks
         """
         # Get anomaly maps and predicted scores from the model.
-        output = self.model(batch["image"].to(self.device), use_for_normalization=use_for_normalization)
-
-        # Add anomaly maps and predicted scores to the batch.
-        batch["anomaly_maps"] = output["anomaly_map"]
-        batch["pred_scores"] = output["pred_score"]
-
-        return batch
+        predictions = self.model(batch["image"].to(self.device), use_for_normalization=use_for_normalization)
+        return batch.update(**predictions._asdict())
 
     def predict_step(
         self,
-        batch: dict[str, str | torch.Tensor],
+        batch: Batch,
         batch_idx: int,
         dataloader_idx: int = 0,
     ) -> STEP_OUTPUT:
