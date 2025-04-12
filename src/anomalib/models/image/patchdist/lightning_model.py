@@ -144,7 +144,7 @@ class PatchDist(MemoryBankMixin, AnomalibModule):
         if self.incremental_indexing:
             embeddings = []
             for item in self.trainer.datamodule.train_data:
-                image = torch.unsqueeze(item["image"], 0)
+                image = torch.unsqueeze(item.image, 0)
                 embedding = self.model(image.to(self.device))
 
                 if self.coreset_sampling_ratio_start is not None:
