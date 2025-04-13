@@ -20,7 +20,8 @@ from anomalib.metrics import Evaluator
 from anomalib.data import Batch
 from anomalib.models.components import AnomalibModule, MemoryBankMixin, KCenterGreedy, KMedoids, Random, Uncertainty
 
-from .anomaly_detector import KNNDetector, DistanceDistribution
+from .distance_distribution import DistanceDistribution
+from .anomaly_detector import Detector
 from .torch_model import PatchDistModel, PatchDistDefaultDetector, PatchDistDefaultIndex
 
 logger = logging.getLogger(__name__)
@@ -45,7 +46,7 @@ class PatchDist(MemoryBankMixin, AnomalibModule):
         backbone_path: str | Path | None = None,
         layer: str | None = "layer2",
         index: NearestNeighbors = PatchDistDefaultIndex,
-        detector: KNNDetector = PatchDistDefaultDetector,
+        detector: Detector = PatchDistDefaultDetector,
         score_distribution: DistanceDistribution | None = None,
         score_quantile: float = 0.99,
         incremental_indexing: bool = False,

@@ -14,7 +14,8 @@ from torch import nn
 from torchvision.models.feature_extraction import create_feature_extractor
 from torchvision.models import get_model
 
-from .anomaly_detector import KNNDetector, DistanceDistribution
+from .anomaly_detector import KNNDetector
+from .distance_distribution import DistanceDistribution
 from .model_registry import get_local_model
 
 __all__ = [
@@ -22,7 +23,7 @@ __all__ = [
 ]
 
 PatchDistDefaultIndex = TorchNeighbors()
-PatchDistDefaultDetector = KNNDetector(n_neighbors=3)
+PatchDistDefaultDetector = KNNDetector(n_neighbors=1)
 
 
 class PatchDistBackbone(enum.Enum):
