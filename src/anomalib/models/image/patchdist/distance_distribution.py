@@ -8,6 +8,8 @@ import torch
 from einops import rearrange
 from nearness import NearestNeighbors
 
+from .anomaly_detector import query_safe_distances
+
 __all__ = [
     "DistanceDistribution",
     "NormalDistanceDistribution",
@@ -23,9 +25,9 @@ class CDF(Protocol):
 
 class DistanceDistribution(ABC):
     def __init__(
-            self,
-            n_neighbors: int,
-            min_samples: int = 8
+        self,
+        n_neighbors: int,
+        min_samples: int = 8
     ) -> None:
         self.n_neighbors = n_neighbors
         self.min_samples = min_samples
@@ -55,12 +57,12 @@ class DistanceDistribution(ABC):
 
 class HistogramDistanceDistribution(DistanceDistribution):
     def __init__(
-            self,
-            n_neighbors: int,
-            min_samples: int = 8,
-            n_buckets: int = 1024,
-            min_value: float | None = None,
-            max_value: float | None = None,
+        self,
+        n_neighbors: int,
+        min_samples: int = 8,
+        n_buckets: int = 1024,
+        min_value: float | None = None,
+        max_value: float | None = None,
     ) -> None:
         """
         Determine the distribution of distances based on a histogram of values (an approximation of the ECDF).
@@ -108,9 +110,9 @@ class HistogramDistanceDistribution(DistanceDistribution):
 
 class EmpiricalDistanceDistribution(DistanceDistribution):
     def __init__(
-            self,
-            n_neighbors: int,
-            min_samples: int = 8,
+        self,
+        n_neighbors: int,
+        min_samples: int = 8,
     ):
         super().__init__(n_neighbors=n_neighbors, min_samples=min_samples)
 
@@ -155,9 +157,9 @@ class ECDF:
 
 class HistCDF:
     def __init__(
-            self,
-            buckets: torch.Tensor,
-            counts: torch.Tensor
+        self,
+        buckets: torch.Tensor,
+        counts: torch.Tensor
     ) -> None:
         cum_sum = torch.cumsum(counts, dim=-1)
         # cum_sum.max() is actually the number of total elements, which should be same
@@ -177,10 +179,10 @@ class NormalDistanceDistribution(DistanceDistribution):
     valid_distribution = Literal["normal", "log", "half"]
 
     def __init__(
-            self,
-            n_neighbors: int,
-            distribution: valid_distribution = "normal",
-            min_samples: int = 8,
+        self,
+        n_neighbors: int,
+        distribution: valid_distribution = "normal",
+        min_samples: int = 8,
     ):
         super().__init__(n_neighbors=n_neighbors, min_samples=min_samples)
         self.distribution = distribution
@@ -237,10 +239,10 @@ class NormalDistanceDistribution(DistanceDistribution):
 
     @staticmethod
     def combine_means(
-            agg_mean: torch.Tensor,
-            batch_mean: torch.Tensor,
-            agg_n: int,
-            batch_n: int
+        agg_mean: torch.Tensor,
+        batch_mean: torch.Tensor,
+        agg_n: int,
+        batch_n: int
     ) -> torch.Tensor:
         """
         Updates old mean mu1 from m samples with mean mu2 of n samples.
@@ -250,19 +252,19 @@ class NormalDistanceDistribution(DistanceDistribution):
 
     @staticmethod
     def combine_vars(
-            agg_var: torch.Tensor,
-            batch_var: torch.Tensor,
-            agg_mean: torch.Tensor,
-            batch_mean: torch.Tensor,
-            agg_n: int,
-            batch_n: int
+        agg_var: torch.Tensor,
+        batch_var: torch.Tensor,
+        agg_mean: torch.Tensor,
+        batch_mean: torch.Tensor,
+        agg_n: int,
+        batch_n: int
     ) -> torch.Tensor:
         """
         Updates old variance v1 from m samples with variance v2 of n samples.
         Returns the variance of the m+n samples.
         """
         return (agg_n / (agg_n + batch_n)) * agg_var + batch_n / (agg_n + batch_n) * batch_var + agg_n * batch_n / (
-                agg_n + batch_n) ** 2 * (agg_mean - batch_mean) ** 2
+            agg_n + batch_n) ** 2 * (agg_mean - batch_mean) ** 2
 
     @property
     def std(self):

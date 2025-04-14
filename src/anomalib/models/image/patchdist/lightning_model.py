@@ -159,6 +159,7 @@ class PatchDist(MemoryBankMixin, AnomalibModule):
             logger.info(f"Training index with data of size {embeddings.shape}.")
             self.model.index.fit(embeddings)
             self.model.index.add(embeddings)
+            self.model.detector.fit(embeddings, self.model.index)
 
         # reset to original coreset sampling type
         self.coreset_sampling_type = original_coreset_sampling_type

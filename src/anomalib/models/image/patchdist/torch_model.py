@@ -7,14 +7,13 @@ import torch
 import timm
 import warnings
 from anomalib.models.components import AnomalyMapGenerator
-from fontTools.misc.cython import returns
 from nearness import TorchNeighbors, NearestNeighbors
 from safecheck import typecheck
 from torch import nn
 from torchvision.models.feature_extraction import create_feature_extractor
 from torchvision.models import get_model
 
-from .anomaly_detector import KNNDetector
+from .anomaly_detector import KNNDetector, Detector
 from .distance_distribution import DistanceDistribution
 from .model_registry import get_local_model
 
@@ -64,7 +63,7 @@ class PatchDistModel(nn.Module):
         backbone: str = "wide_resnet50_2",
         backbone_path: str | Path | None = None,
         index: NearestNeighbors = PatchDistDefaultIndex,
-        detector: KNNDetector = PatchDistDefaultDetector,
+        detector: Detector = PatchDistDefaultDetector,
         score_quantile: float = 0.99,
         score_distribution: DistanceDistribution | None = None,
     ) -> None:
