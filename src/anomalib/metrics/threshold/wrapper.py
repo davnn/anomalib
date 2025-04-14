@@ -6,12 +6,16 @@ from typing import Literal
 import torch
 from typing_extensions import Any
 
-from .base import BaseThreshold
+from anomalib.metrics import AnomalibMetric
+
+from .base import Threshold
 
 logger = logging.getLogger(__name__)
 
+__all__ = ["WrapperThreshold"]
 
-class WrapperThreshold(BaseThreshold):
+
+class _WrapperThreshold(Threshold):
     """Anomaly Score Threshold.
 
     A wrapper to bundle alternative unsupervised thresholding approaches.
@@ -24,12 +28,12 @@ class WrapperThreshold(BaseThreshold):
     threshold_type = Literal["fixed", "survival", "iqr", "mad", "sigma"]
 
     def __init__(
-            self,
-            default_value: float = 0.5,
-            method: threshold_type = "fixed",
-            # useful for patchdist, to ensure only well-normalized values are used for thresholding
-            ignore_first_n_values: int = 0,
-            **method_kwargs: Any
+        self,
+        default_value: float = 0.5,
+        method: threshold_type = "fixed",
+        # useful for patchdist, to ensure only well-normalized values are used for thresholding
+        ignore_first_n_values: int = 0,
+        **method_kwargs: Any
     ) -> None:
         super().__init__()
         self.add_state("scores", default=[], persistent=True)
@@ -61,7 +65,8 @@ class WrapperThreshold(BaseThreshold):
 
         if len(self.scores) > 0:
             scores = torch.cat(self.scores, dim=0)[self.ignore_first_n_values:]  # ignore first values inclusive
-            logger.info("Scores (normalize): %s (min) %s (mean) %s (max) %s (std)", scores.min(), scores.mean(), scores.max(), scores.std())
+            logger.info("Scores (normalize): %s (min) %s (mean) %s (max) %s (std)", scores.min(), scores.mean(),
+                        scores.max(), scores.std())
             return threshold(scores, method=self.method, return_components=True, **self.method_kwargs)
         else:
             raise ValueError("Can not compute components without scores.")
@@ -69,6 +74,10 @@ class WrapperThreshold(BaseThreshold):
     def update_threshold_scale(self, scale: float) -> None:
         """Update the scale value of this object, used in thresholding."""
         self.method_kwargs["scale"] = scale
+
+
+class WrapperThreshold(AnomalibMetric, _WrapperThreshold):
+    ...
 
 
 def threshold(scores: torch.Tensor,
