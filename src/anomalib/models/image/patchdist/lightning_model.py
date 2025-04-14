@@ -256,17 +256,22 @@ class PatchDist(MemoryBankMixin, AnomalibModule):
         """TODO(David): Check if the correct image size is given here
         """
         image_size = image_size or (256, 256)
-        if center_crop_size is None:
+        if center_crop_size is not None:
             # scale center crop size proportional to image size
-            height, width = image_size
-            center_crop_size = (int(height * (224 / 256)), int(width * (224 / 256)))
+            return PreProcessor(
+                transform=Compose([
+                    Resize(image_size, antialias=True),
+                    CenterCrop(center_crop_size),
+                    Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+                ])
+            )
 
-        transform = Compose([
-            Resize(image_size, antialias=True),
-            CenterCrop(center_crop_size),
-            Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
-        ])
-        return PreProcessor(transform=transform)
+        return PreProcessor(
+            transform=Compose([
+                Resize(image_size, antialias=True),
+                Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+            ])
+        )
 
     @staticmethod
     def configure_post_processor() -> PostProcessor:
