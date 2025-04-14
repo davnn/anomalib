@@ -37,31 +37,21 @@ class EnsembleIndex(NearestNeighbors):
         sampler: Literal["kcenter", "random"] = "kcenter",
         reduction: Literal["mean", "max", "median"] = "mean",
         random_seed: int | None = None,  # currently not used..
-        sampling_ratio: float | None = None,
+        sampling_ratio_fit: int | float | None = None,
+        sampling_ratio_add: int | float | None = None,
         n_indices: int = 1,
         device: str | torch.device = "auto"
     ) -> None:
         super().__init__()
         assert n_indices > 0, "Parameter 'n_indices' must be greater than zero."
-        self.sampling_ratio = sampling_ratio if sampling_ratio is not None else 1 / n_indices
+        self.sampling_ratio_fit = sampling_ratio_fit if sampling_ratio_fit is not None else 1 / n_indices
+        self.sampling_ratio_add = sampling_ratio_add if sampling_ratio_add is not None else 1 / n_indices
         self.indices = [deepcopy(base_index) for _ in range(n_indices)]
         self.sampler_class = {
             "kcenter": KCenterGreedy,
             "random": Random,
         }[sampler]
         self.device = self._get_device(device)
-
-    def _get_device(self, device: str | torch.device) -> torch.device:
-        match device:
-            case "auto":
-                return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-            case str() as device_name:
-                return torch.device(device_name)
-            case torch.device() as device:
-                return device
-            case _ as value:
-                msg = f"Invalid torch device specified, found '{value}'."
-                raise ValueError(msg)
 
     def fit(self, data: np.ndarray) -> "EnsembleIndex":
         """
@@ -77,11 +67,7 @@ class EnsembleIndex(NearestNeighbors):
         EnsembleIndex
             The fitted ensemble object.
         """
-        tensor = torch.from_numpy(data).to(self.device)
-        for index in self.indices:
-            coreset = self.subsample_embedding(tensor, sampling_ratio=self.sampling_ratio)
-            index.fit(coreset)
-        return self
+        return self._apply_coreset(data, "fit")
 
     def add(self, data: np.ndarray) -> "EnsembleIndex":
         """
@@ -97,8 +83,40 @@ class EnsembleIndex(NearestNeighbors):
         EnsembleIndex
             The fitted ensemble object.
         """
+        return self._apply_coreset(data, method="add")
+
+    def _get_device(self, device: str | torch.device) -> torch.device:
+        match device:
+            case "auto":
+                return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            case str() as device_name:
+                return torch.device(device_name)
+            case torch.device() as device:
+                return device
+            case _ as value:
+                msg = f"Invalid torch device specified, found '{value}'."
+                raise ValueError(msg)
+
+    def _apply_coreset(self, data: np.ndarray, method: Literal["fit"] | Literal["add"]) -> "EnsembleIndex":
+        """
+        Add data to the existing index.
+
+        Parameters
+        ----------
+        data : np.ndarray
+            Input data to build the nearest neighbor indices on.
+
+        Returns
+        -------
+        EnsembleIndex
+            The fitted ensemble object.
+        """
+        tensor = torch.from_numpy(data).to(self.device)
+        sampling_ratio = self.sampling_ratio_fit if method == "fit" else self.sampling_ratio_add
+        sampling_ratio = sampling_ratio / len(data) if isinstance(sampling_ratio, int) else sampling_ratio
         for index in self.indices:
-            index.add(data)
+            coreset = self.subsample_embedding(tensor, sampling_ratio=sampling_ratio)
+            getattr(index, method)(coreset)
         return self
 
     def query(self, point: np.ndarray, n_neighbors: int) -> list[tuple[np.ndarray, np.ndarray]]:
