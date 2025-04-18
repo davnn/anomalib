@@ -12,7 +12,9 @@ from .base import Threshold
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["WrapperThreshold"]
+__all__ = ["WrapperThreshold", "ThresholdMethodT"]
+
+ThresholdMethodT = Literal["fixed", "survival", "iqr", "mad", "sigma"]
 
 
 class _WrapperThreshold(Threshold):
@@ -25,12 +27,12 @@ class _WrapperThreshold(Threshold):
             Defaults to ``0.5``.
     """
     full_state_update: bool = False
-    threshold_type = Literal["fixed", "survival", "iqr", "mad", "sigma"]
 
     def __init__(
         self,
         default_value: float = 0.5,
-        method: threshold_type = "fixed",
+        method: ThresholdMethodT = "fixed",
+        flatten_scores: bool = False,
         # useful for patchdist, to ensure only well-normalized values are used for thresholding
         ignore_first_n_values: int = 0,
         **method_kwargs: Any
@@ -39,6 +41,7 @@ class _WrapperThreshold(Threshold):
         self.add_state("scores", default=[], persistent=True)
         self.value = torch.tensor(default_value)
         self.ignore_first_n_values = ignore_first_n_values
+        self.flatten_scores = flatten_scores
         self.method = method
         self.method_kwargs = method_kwargs
 
@@ -52,6 +55,7 @@ class _WrapperThreshold(Threshold):
         """ Determine the threshold for all gathered ``scores``"""
         if len(self.scores) > 0 and self.method != "fixed":
             scores = torch.cat(self.scores, dim=0)[self.ignore_first_n_values:]  # ignore first values inclusive
+            scores = scores.ravel() if self.flatten_scores else scores
             value = threshold(scores, method=self.method, **self.method_kwargs)
             self.value = value
 
@@ -81,7 +85,7 @@ class WrapperThreshold(AnomalibMetric, _WrapperThreshold):
 
 
 def threshold(scores: torch.Tensor,
-              method: WrapperThreshold.threshold_type,
+              method: ThresholdMethodT,
               **kwargs: Any) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
     threshold_map = {
         "survival": threshold_survival,
