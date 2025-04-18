@@ -1,18 +1,14 @@
-from abc import ABC, abstractmethod
-from typing import Literal, get_args, Protocol
+import abc
+from abc import ABC
+from typing import Literal, get_args
 
 import logging
-import nearness
 import numpy as np
-import torch
-from anomalib.models.components import KCenterGreedy, KMedoids
-from einops import rearrange
 from nearness import NearestNeighbors
 
 __all__ = [
     "KNNDetector",
     "LOFDetector",
-    "RandomSampleKNN"
 ]
 
 logger = logging.getLogger(__name__)
@@ -20,27 +16,42 @@ logger = logging.getLogger(__name__)
 KNNReductionT = Literal["max", "mean", "median"]
 
 
-class Detector(ABC):
+class Detector(abc.ABC):
+    def __init__(self):
+        self._is_fitted = False
 
+    @property
+    def is_fitted(self):
+        return self._is_fitted
+
+    @is_fitted.setter
+    def is_fitted(self, value: bool) -> None:
+        self._is_fitted = value
+
+    @abc.abstractmethod
     def fit(self, x, index: NearestNeighbors):
         ...
 
+    @abc.abstractmethod
     def predict(self, x, index: NearestNeighbors):
         ...
 
 
 class KNNDetector(Detector):
     def __init__(self, n_neighbors: int, reduction: KNNReductionT = "max"):
+        super().__init__()
         self.n_neighbors = n_neighbors
         self.reduction = reduction
 
     def fit(self, x: np.ndarray, index: NearestNeighbors) -> None:
         assert index.is_fitted
+        self.is_fitted = True
 
     def predict(self, x: np.ndarray, index: NearestNeighbors) -> np.ndarray:
         assert index.is_fitted
+        assert self.is_fitted
         dist = query_safe_distances(x, index, n_neighbors=self.n_neighbors)
-        logger.info(
+        logger.debug(
             "KNN (prediction): %s (min) %s (mean) %s (max) %s (std)",
             dist.min(),
             dist.mean(),
@@ -59,8 +70,8 @@ class KNNDetector(Detector):
 
 class LOFDetector(Detector):
     def __init__(self, n_neighbors: int):
+        super().__init__()
         self.n_neighbors = n_neighbors
-
         self.lrd_train = None
         self.idx_train = None
         self.dist_train = None
@@ -72,9 +83,11 @@ class LOFDetector(Detector):
         self.idx_train = idx[:, 1:]  # ignore first neighbor of training points
         self.dist_train = dist[:, 1:]  # ignore first neighbor of training points
         self.lrd_train = local_reachability_density(self.dist_train, self.dist_train, self.idx_train, self.n_neighbors)
+        self.is_fitted = True
 
     def predict(self, x: np.ndarray, index: NearestNeighbors) -> np.ndarray:
-        assert self.lrd_train is not None, "LOF must be 'fit' before 'predict' can be used."
+        assert self.is_fitted
+        assert index.is_fitted
         idx, dist = index.query_batch(x, n_neighbors=self.n_neighbors)
         lrd_test = local_reachability_density(self.dist_train, dist, idx, self.n_neighbors)
         return local_outlier_factor(self.lrd_train, lrd_test, idx)

@@ -20,6 +20,7 @@ registry["efficientad_pdn_m"] = MediumPatchDescriptionNetwork(out_channels=384)
 def get_local_model(model_name: str, pretrained: bool = False):
     if pretrained:
         msg = "Local model is not available with pretrained=True, please specify the path to the weights manually."
+        raise ValueError(msg)
 
     model = registry.get(model_name)
     return model

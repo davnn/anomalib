@@ -45,8 +45,9 @@ class KCenterGreedy:
         torch.Size([219, 1536])
     """
 
-    def __init__(self, embedding: torch.Tensor, sampling_ratio: float) -> None:
+    def __init__(self, embedding: torch.Tensor, sampling_ratio: float, progress: bool = True) -> None:
         self.embedding = embedding
+        self.progress = progress
         self.coreset_size = int(embedding.shape[0] * sampling_ratio)
         self.model = SparseRandomProjection(eps=0.9)
 
@@ -118,7 +119,7 @@ class KCenterGreedy:
 
         selected_coreset_idxs: list[int] = []
         idx = int(torch.randint(high=self.n_observations, size=(1,)).item())
-        for _ in tqdm(range(self.coreset_size), desc="Selecting Coreset Indices."):
+        for _ in tqdm(range(self.coreset_size), desc="Selecting Coreset Indices.", disable=not self.progress):
             self.update_distances(cluster_centers=[idx])
             idx = self.get_new_idx()
             if idx in selected_idxs:

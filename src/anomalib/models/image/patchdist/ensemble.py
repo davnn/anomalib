@@ -1,13 +1,20 @@
+import contextlib
+import logging
+from functools import partial
+
 import numpy as np
 import torch
 from copy import deepcopy
-from pathlib import Path
 from typing import Literal
 
+from joblib import cpu_count
 from nearness import NearestNeighbors
 from anomalib.models.components import KCenterGreedy, Random
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from .anomaly_detector import Detector, KNNReductionT
+from .detector import Detector, KNNReductionT
+
+logger = logging.getLogger(__name__)
 
 
 class EnsembleIndex(NearestNeighbors):
@@ -29,29 +36,34 @@ class EnsembleIndex(NearestNeighbors):
     n_indices : int, default=1
         Number of ensemble members to create.
     """
+    IndexMethodT = Literal["fit", "add"]
+    CoresetMethodT = Literal["kcenter", "random"]
 
     def __init__(
         self,
         *,
         base_index: NearestNeighbors,
-        sampler: Literal["kcenter", "random"] = "kcenter",
-        reduction: Literal["mean", "max", "median"] = "mean",
-        random_seed: int | None = None,  # currently not used..
-        sampling_ratio_fit: int | float | None = None,
-        sampling_ratio_add: int | float | None = None,
+        coreset_method: CoresetMethodT = "kcenter",
+        coreset_ratio_fit: int | float | None = None,
+        coreset_ratio_add: int | float | None = None,
         n_indices: int = 1,
-        device: str | torch.device = "auto"
+        n_jobs: int = 0,
+        device: str | torch.device = "auto",
     ) -> None:
         super().__init__()
         assert n_indices > 0, "Parameter 'n_indices' must be greater than zero."
-        self.sampling_ratio_fit = sampling_ratio_fit if sampling_ratio_fit is not None else 1 / n_indices
-        self.sampling_ratio_add = sampling_ratio_add if sampling_ratio_add is not None else 1 / n_indices
+        self.coreset_ratio_fit = coreset_ratio_fit if coreset_ratio_fit is not None else 1 / n_indices
+        self.coreset_ratio_add = coreset_ratio_add if coreset_ratio_add is not None else 1 / n_indices
         self.indices = [deepcopy(base_index) for _ in range(n_indices)]
-        self.sampler_class = {
-            "kcenter": KCenterGreedy,
+        self.coreset_class = {
+            "kcenter": partial(KCenterGreedy, progress=False),
             "random": Random,
-        }[sampler]
+        }[coreset_method]
         self.device = self._get_device(device)
+        self.n_jobs = min(cpu_count(), n_indices) if n_jobs == -1 else n_jobs
+        self.thread_pool = self._create_pool()
+        self.index_streams = self._create_streams()
+        self.apply_coreset = self._apply_coreset_loop if n_jobs == 0 else self._apply_coreset_parallel
 
     def fit(self, data: np.ndarray) -> "EnsembleIndex":
         """
@@ -67,7 +79,7 @@ class EnsembleIndex(NearestNeighbors):
         EnsembleIndex
             The fitted ensemble object.
         """
-        return self._apply_coreset(data, "fit")
+        return self.apply_coreset(data, method="fit")
 
     def add(self, data: np.ndarray) -> "EnsembleIndex":
         """
@@ -83,23 +95,37 @@ class EnsembleIndex(NearestNeighbors):
         EnsembleIndex
             The fitted ensemble object.
         """
-        return self._apply_coreset(data, method="add")
+        return self.apply_coreset(data, method="add")
 
-    def _get_device(self, device: str | torch.device) -> torch.device:
+    @staticmethod
+    def _get_device(device: str | torch.device) -> torch.device:
         match device:
             case "auto":
                 return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-            case str() as device_name:
-                return torch.device(device_name)
-            case torch.device() as device:
+            case str():
+                return torch.device(device)
+            case torch.device():
                 return device
             case _ as value:
                 msg = f"Invalid torch device specified, found '{value}'."
                 raise ValueError(msg)
 
-    def _apply_coreset(self, data: np.ndarray, method: Literal["fit"] | Literal["add"]) -> "EnsembleIndex":
+    def _apply_coreset_loop(self, data: np.ndarray, *, method: IndexMethodT) -> "EnsembleIndex":
+        tensor = torch.from_numpy(data).to(self.device, non_blocking=True)
+        sampling_ratio = self._get_sampling_ratio(len(data), method=method)
+        for idx, index in enumerate(self.indices):
+            self._process_index(
+                index,
+                idx=idx,
+                method=method,
+                tensor=tensor,
+                sampling_ratio=sampling_ratio
+            )
+        return self
+
+    def _apply_coreset_parallel(self, data: np.ndarray, *, method: IndexMethodT) -> "EnsembleIndex":
         """
-        Add data to the existing index.
+        Apply coreset sampling to the given data to spread the data over multiples indices.
 
         Parameters
         ----------
@@ -109,15 +135,78 @@ class EnsembleIndex(NearestNeighbors):
         Returns
         -------
         EnsembleIndex
-            The fitted ensemble object.
+            The ensemble index.
         """
-        tensor = torch.from_numpy(data).to(self.device)
-        sampling_ratio = self.sampling_ratio_fit if method == "fit" else self.sampling_ratio_add
-        sampling_ratio = sampling_ratio / len(data) if isinstance(sampling_ratio, int) else sampling_ratio
-        for index in self.indices:
-            coreset = self.subsample_embedding(tensor, sampling_ratio=sampling_ratio)
-            getattr(index, method)(coreset)
+        tensor = torch.from_numpy(data).to(self.device, non_blocking=True)
+        sampling_ratio = self._get_sampling_ratio(len(data), method=method)
+
+        # Wait for all tasks to finish, but no need to collect results
+        futures = [self.thread_pool.submit(
+            self._process_index,
+            index,
+            idx=idx,
+            method=method,
+            tensor=tensor,
+            sampling_ratio=sampling_ratio
+        ) for idx, index in enumerate(self.indices)]
+        for future in as_completed(futures):
+            try:  # Ensure all futures complete
+                future.result()  # Will raise exception if one occurred
+            except Exception as e:
+                logger.error("Exception in subsampling thread: %s", e)
+            except BaseException as e:
+                logger.critical("Critical error in subsampling thread: %s", e)
         return self
+
+    def _get_sampling_ratio(self, n_samples: int, *, method: IndexMethodT) -> float:
+        sampling_ratio = self.coreset_ratio_fit if method == "fit" else self.coreset_ratio_add
+        sampling_ratio = sampling_ratio / n_samples if isinstance(sampling_ratio, int) else sampling_ratio
+        return sampling_ratio
+
+    def _process_index(
+            self,
+            index: NearestNeighbors,
+            *,
+            idx: int,
+            method: IndexMethodT,
+            sampling_ratio: float,
+            tensor: torch.Tensor,
+    ) -> None:
+        with self.index_streams[idx] as stream:  # make sure the device copy on default stream is done
+            if isinstance(stream, torch.cuda.Stream):
+                stream.wait_stream(torch.cuda.default_stream(device=self.device))
+            coreset = self.subsample_embedding(tensor, sampling_ratio=sampling_ratio)
+            getattr(index, method)(coreset.cpu().numpy())
+
+    def __getstate__(self):
+        state = super().__getstate__()
+        # Remove thread pool since it's not pickleable
+        state["thread_pool"] = None
+        state["index_streams"] = None
+        return state
+
+    def __setstate__(self, state):
+        super().__setstate__(state)
+        self.__dict__.update(state)
+        # Recreate the thread pool after unpickling
+        self.thread_pool = self._create_pool()
+        self.index_streams = self._create_streams()
+
+    def _create_streams(self) -> list[torch.cuda.StreamContext]:
+        device_use_cuda = self.device.type == "cuda"
+
+        def cuda_stream_context(use_cuda: bool = device_use_cuda):
+            if use_cuda:
+                stream = torch.cuda.Stream(device=self.device)
+                return torch.cuda.stream(stream)
+            else:
+                # No-op context manager when CUDA is not available
+                return contextlib.nullcontext()
+
+        return [cuda_stream_context() for _ in range(len(self.indices))]
+
+    def _create_pool(self) -> ThreadPoolExecutor | None:
+        return ThreadPoolExecutor(max_workers=self.n_jobs) if self.n_jobs > 0 else None
 
     def query(self, point: np.ndarray, n_neighbors: int) -> list[tuple[np.ndarray, np.ndarray]]:
         """
@@ -135,7 +224,9 @@ class EnsembleIndex(NearestNeighbors):
         list of tuple[np.ndarray, np.ndarray]
             List of (distances, indices) tuples from each ensemble member.
         """
-        return [index.query(point, n_neighbors) for index in self.indices]
+        result = [index.query(point, n_neighbors) for index in self.indices]
+        idx, dist = zip(*result)
+        return np.stack(idx), np.stack(dist)
 
     def query_batch(self, points: np.ndarray, n_neighbors: int) -> list[tuple[np.ndarray, np.ndarray]]:
         """
@@ -153,9 +244,12 @@ class EnsembleIndex(NearestNeighbors):
         list of tuple[np.ndarray, np.ndarray]
             List of (distances, indices) tuples from each ensemble member.
         """
-        return [index.query_batch(points, n_neighbors) for index in self.indices]
+        result = [index.query_batch(points, n_neighbors) for index in self.indices]
+        idx, dist = zip(*result)
+        return np.stack(idx), np.stack(dist)
 
-    def subsample_embedding(self, embedding: torch.Tensor, sampling_ratio: float) -> np.ndarray:
+    @torch.inference_mode()
+    def subsample_embedding(self, embedding: torch.Tensor, sampling_ratio: float) -> torch.Tensor:
         """
         Subsample the embedding using the configured sampling method.
 
@@ -171,8 +265,8 @@ class EnsembleIndex(NearestNeighbors):
         np.ndarray
             Subsampled coreset embedding.
         """
-        sampler = self.sampler_class(embedding=embedding, sampling_ratio=sampling_ratio)
-        return sampler.sample_coreset().cpu().numpy()
+        sampler = self.coreset_class(embedding=embedding, sampling_ratio=sampling_ratio)
+        return sampler.sample_coreset()
 
 
 class EnsembleDetector(Detector):
@@ -188,10 +282,11 @@ class EnsembleDetector(Detector):
     """
 
     def __init__(
-        self,
-        base_detector: Detector,
-        reduction: KNNReductionT = "max",
+            self,
+            base_detector: Detector,
+            reduction: KNNReductionT = "max",
     ) -> None:
+        super().__init__()
         self.base_detector = base_detector
         self.reduction = {
             "mean": np.mean,
@@ -221,6 +316,7 @@ class EnsembleDetector(Detector):
         self.detectors = [deepcopy(self.base_detector) for _ in index.indices]
         for detector, sub_index in zip(self.detectors, index.indices, strict=True):
             detector.fit(x, sub_index)
+        self.is_fitted = True
 
     def predict(self, x: np.ndarray, index: NearestNeighbors) -> np.ndarray:
         """
@@ -244,5 +340,6 @@ class EnsembleDetector(Detector):
             If the given index is not an instance of EnsembleIndex.
         """
         assert isinstance(index, EnsembleIndex), "'EnsembleDetector' requires 'EnsembleIndex'."
+        assert self.is_fitted
         predictions = [det.predict(x, idx) for det, idx in zip(self.detectors, index.indices, strict=True)]
         return self.reduction(predictions, axis=0)

@@ -1,64 +1,96 @@
 """TODO: Add publication.
 """
-
 import logging
 import warnings
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, Dict
+from typing import Any, Dict
+from typing import Literal
 
 import numpy as np
 import torch
 from lightning.pytorch.utilities.types import STEP_OUTPUT
 from nearness import NearestNeighbors
-from torchvision.transforms.v2 import Compose, Normalize, Transform, Resize, InterpolationMode, CenterCrop
+from torchvision.transforms.v2 import Compose, Normalize, Resize, CenterCrop
+from tqdm import tqdm
 
 from anomalib import LearningType
+from anomalib.data import Batch, AnomalibDataModule
+from anomalib.metrics import Evaluator
+from anomalib.models.components import AnomalibModule, MemoryBankMixin, KCenterGreedy, KMedoids, Random, Uncertainty
 from anomalib.post_processing import PostProcessor
 from anomalib.pre_processing import PreProcessor
 from anomalib.visualization import Visualizer
-from anomalib.metrics import Evaluator
-from anomalib.data import Batch
-from anomalib.models.components import AnomalibModule, MemoryBankMixin, KCenterGreedy, KMedoids, Random, Uncertainty
-
-from .distance_distribution import DistanceDistribution
-from .anomaly_detector import Detector
+from .detector import Detector
+from .distribution import (
+    DistanceDistribution
+)
 from .torch_model import PatchDistModel, PatchDistDefaultDetector, PatchDistDefaultIndex
+
+__all__ = [
+    "PatchDist",
+    "CoresetRatioT",
+    "CoresetMethodT",
+    "CoresetDeviceT"
+]
 
 logger = logging.getLogger(__name__)
 
+CoresetRatioT = float | int | None
+CoresetMethodT = Literal["random", "kcenter", "kmedoids", "uncertainty"]
+CoresetDeviceT = torch.device | str | None
+
+
+@dataclass(frozen=True)
+class CoresetMethod:
+    start: CoresetMethodT
+    step: CoresetMethodT
+    end: CoresetMethodT
+
+
+@dataclass(frozen=True)
+class CoresetRatio:
+    start: CoresetRatioT
+    step: CoresetRatioT
+    end: CoresetRatioT
+
+
+@dataclass(frozen=True)
+class CoresetDevice:
+    start: CoresetDeviceT
+    step: CoresetDeviceT
+    end: CoresetDeviceT
+
 
 class PatchDist(MemoryBankMixin, AnomalibModule):
-    """PatchcoreLightning Module to train PatchCore algorithm.
-
-    Args:
-        input_size (tuple[int, int]): Size of the model input.
-            Defaults to ``(224, 224)``.
-        backbone (str): Backbone CNN network
-            Defaults to ``wide_resnet50_2``.
-        layer (str): Layer to extract features from the backbone CNN
-            Defaults to ``["layer2", "layer3"]``.
+    """PatchDist.
     """
 
     def __init__(
-        self,
-        input_size: tuple[int, int] = (224, 224),
-        backbone: str = "wide_resnet50_2",
-        backbone_path: str | Path | None = None,
-        layer: str | None = "layer2",
-        index: NearestNeighbors = PatchDistDefaultIndex,
-        detector: Detector = PatchDistDefaultDetector,
-        score_distribution: DistanceDistribution | None = None,
-        score_quantile: float = 0.99,
-        incremental_indexing: bool = False,
-        coreset_sampling_ratio_start: float | int | None = None,
-        coreset_sampling_ratio_step: float | int | None = 0.1,
-        coreset_sampling_ratio_end: float | int | None = None,
-        coreset_sampling_type: Literal["random", "kcenter", "kmedoids", "uncertainty"] = "kcenter",
-        coreset_sampling_device: Literal["initial", "cpu", "auto"] = "initial",
-        pre_processor: torch.nn.Module | bool = True,
-        post_processor: torch.nn.Module | bool = True,
-        evaluator: Evaluator | bool = True,
-        visualizer: Visualizer | bool = True,
+            self,
+            backbone: str = "wide_resnet50_2",
+            backbone_path: str | Path | None = None,
+            layer: str | None = "layer2",
+            index: NearestNeighbors = PatchDistDefaultIndex,
+            detector: Detector = PatchDistDefaultDetector,
+            score_distribution: DistanceDistribution | None = None,
+            score_quantile: float = 0.99,
+            incremental_indexing: bool = False,
+            coreset_ratio_start: CoresetRatioT = None,
+            coreset_ratio_step: CoresetRatioT = 0.1,
+            coreset_ratio_end: CoresetRatioT = None,
+            coreset_method_start: CoresetMethodT = "kcenter",
+            coreset_method_step: CoresetMethodT = "kcenter",
+            coreset_method_end: CoresetMethodT = "kcenter",
+            coreset_device_start: CoresetDeviceT = None,
+            coreset_device_step: CoresetDeviceT = None,
+            coreset_device_end: CoresetDeviceT = None,
+            coreset_aggregate_start: bool = False,
+            coreset_batch_start: bool = False,
+            pre_processor: torch.nn.Module | bool = True,
+            post_processor: torch.nn.Module | bool = True,
+            evaluator: Evaluator | bool = True,
+            visualizer: Visualizer | bool = True,
     ) -> None:
         super().__init__(
             pre_processor=pre_processor,
@@ -66,19 +98,28 @@ class PatchDist(MemoryBankMixin, AnomalibModule):
             evaluator=evaluator,
             visualizer=visualizer,
         )
-        self.coreset_sampling_ratio_start = coreset_sampling_ratio_start
-        self.coreset_sampling_ratio_step = coreset_sampling_ratio_step
-        self.coreset_sampling_ratio_end = coreset_sampling_ratio_end
-        self.coreset_sampling_type = coreset_sampling_type
-        # auto = use the lightning device for start and step-sampling and cpu for end sampling
-        # initial = use the lightning device for all sampling
-        # cpu = use cpu for all sampling
-        self.coreset_sampling_device = coreset_sampling_device
+        self.coreset_ratio = CoresetRatio(
+            start=coreset_ratio_start,
+            step=coreset_ratio_step,
+            end=coreset_ratio_end
+        )
+        self.coreset_method = CoresetMethod(
+            start=coreset_method_start,
+            step=coreset_method_step,
+            end=coreset_method_end
+        )
+        self.coreset_device = CoresetDevice(
+            start=coreset_device_start,
+            step=coreset_device_step,
+            end=coreset_device_end
+        )
+        self.coreset_aggregate_start = coreset_aggregate_start
+        self.coreset_batch_start = coreset_batch_start
         self.incremental_indexing = incremental_indexing
         self.model: PatchDistModel = PatchDistModel(
-            input_size=input_size,
             layer=layer,
             backbone=backbone,
+            backbone_path=backbone_path,
             index=index,
             detector=detector,
             score_quantile=score_quantile,
@@ -86,23 +127,8 @@ class PatchDist(MemoryBankMixin, AnomalibModule):
         )
         self.embeddings: list[torch.Tensor] = []
 
-    def get_coreset_sampling_device(
-        self,
-        step: Literal["start", "step", "end"]
-    ) -> torch.device | str:
-        if self.coreset_sampling_device == "auto":
-            if step == "end":
-                return "cpu"
-            return self.device
-        if self.coreset_sampling_device == "cpu":
-            return "cpu"
-        if self.coreset_sampling_device == "initial":
-            return self.device
-
-        raise AssertionError(f"Invalid coreset sampling device {self.coreset_sampling_device}")
-
     @staticmethod
-    def determine_coreset_ratio(coreset_ratio: int | float, embedding: torch.Tensor):
+    def get_coreset_ratio(coreset_ratio: int | float, embedding: torch.Tensor):
         coreset_ratio = coreset_ratio / len(embedding) if isinstance(coreset_ratio, int) else coreset_ratio
         is_valid_ratio = lambda value: (isinstance(value, float) and (0 < value < 1)) or value is None
         if not is_valid_ratio(coreset_ratio):
@@ -113,6 +139,23 @@ class PatchDist(MemoryBankMixin, AnomalibModule):
             raise ValueError(msg)
 
         return coreset_ratio
+
+    def get_coreset_device(self, device: str | torch.device | None) -> torch.device:
+        """
+        Determine the torch device used for coreset sampling
+
+        Note: The pytorch lightning device (self.device) is not usable in __init__ as it changes
+        when moved to the real device, therefore this method has to be called when the model has
+        already been moved to the correct device.
+        """
+        match device:
+            case None:
+                return self.device
+            case torch.device():
+                return device
+            case str():
+                return torch.device(device)
+        raise ValueError(f"Invalid coreset sampling device: {device}")
 
     def configure_optimizers(self) -> None:
         """Configure optimizers.
@@ -129,40 +172,44 @@ class PatchDist(MemoryBankMixin, AnomalibModule):
         This is not necesary for most indexing structures, but some require a training stage, see:
         <https://github.com/facebookresearch/faiss/wiki/Faster-search>
         """
-        if self.coreset_sampling_type == "uncertainty" and not self.incremental_indexing:
-            msg = "Cannot use uncertainty sampling when incremental_indexing=False, setting incremental_indexing=True."
-            warnings.warn(msg)
-            self.incremental_indexing = True
+        fully_fitted = self.model.detector.is_fitted and self.model.index.is_fitted
+        uses_uncertainty_on_start = self.coreset_method.start == "uncertainty" and self.incremental_indexing
+        if uses_uncertainty_on_start and not fully_fitted:
+            msg = "Cannot use uncertainty sampling on train start without a fitted index and detector."
+            raise ValueError(msg)
 
-        if self.coreset_sampling_ratio_start is not None and not self.incremental_indexing:
-            msg = "Cannot use coreset sampling on start of training when incremental indexing is False, ignoring."
+        uses_uncertainty = "uncertainty" in [self.coreset_method.step, self.coreset_method.end]
+        if uses_uncertainty and not self.incremental_indexing:
+            msg = "Using uncertainty sampling without incremental indexing."
             warnings.warn(msg)
 
-        # coreset sampling at start currently uses (hardcoded) random sampling to determine the data distribution
-        # and switches back to the original coreset sampling method
-        original_coreset_sampling_type = self.coreset_sampling_type
-        self.coreset_sampling_type = "random"
         if self.incremental_indexing:
             embeddings = []
-            for item in self.trainer.datamodule.train_data:
-                image = torch.unsqueeze(item.image, 0)
+            use_coreset = self.coreset_ratio.start is not None
+            logger.info(f"Using incremental indexing: coreset={use_coreset} aggregate={self.coreset_aggregate_start}")
+            datamodule: AnomalibDataModule = self.trainer.datamodule  # type: ignore
+            dataloader = datamodule.train_dataloader() if self.coreset_batch_start else datamodule.train_data
+            total_size = self.trainer.num_training_batches if self.coreset_batch_start else len(dataloader)
+            for item in tqdm(dataloader, desc="Generating training data embedding", total=total_size):
+                image = item.image if self.coreset_batch_start else item.image.unsqueeze(dim=0)
                 embedding = self.model(image.to(self.device))
+                if use_coreset and not self.coreset_aggregate_start:
+                    embedding = self.subsample_embedding(embedding, "start")
+                embeddings.append(embedding)
 
-                if self.coreset_sampling_ratio_start is not None:
-                    ratio = self.determine_coreset_ratio(self.coreset_sampling_ratio_start, embedding)
-                    embedding = torch.as_tensor(embedding, device=self.get_coreset_sampling_device("start"))
-                    embedding = self.subsample_embedding(embedding, ratio)
+            # stack the (possibly coreset-sampled) embeddings to a single tensor
+            embeddings = torch.vstack(embeddings)
 
-                embeddings.append(embedding.cpu())
+            # coreset-sample the aggregated embeddings if configured to do so
+            if use_coreset and self.coreset_aggregate_start:
+                logger.info(f"Coreset sampling aggregate embedding of size {embeddings.shape}.")
+                embeddings = self.subsample_embedding(embeddings, step="start")
 
-            embeddings = torch.vstack(embeddings).numpy()
+            # convert the embeddings to numpy to fit the index and detector
+            embeddings = embeddings.numpy(force=True)
             logger.info(f"Training index with data of size {embeddings.shape}.")
             self.model.index.fit(embeddings)
-            self.model.index.add(embeddings)
             self.model.detector.fit(embeddings, self.model.index)
-
-        # reset to original coreset sampling type
-        self.coreset_sampling_type = original_coreset_sampling_type
 
     @torch.inference_mode()
     def training_step(self, batch: Batch, *args, **kwargs) -> None:
@@ -171,21 +218,23 @@ class PatchDist(MemoryBankMixin, AnomalibModule):
         embedding = self.model(batch.image.to(self.device))
 
         # Log the embedding size for the first batch
-        if self.trainer.global_step == 0:
-            logger.info(f"First training batch with embeddings {embedding.shape}")
+        is_first_batch = self.trainer.global_step == 0
+        is_first_batch and logger.info(f"First training batch embedding: {embedding.shape}")
 
         # Coreset sample the embedding
-        if self.coreset_sampling_ratio_step is not None:
-            ratio = self.determine_coreset_ratio(self.coreset_sampling_ratio_step, embedding)
-            embedding = torch.as_tensor(embedding, device=self.get_coreset_sampling_device("step"))
-            embedding = self.subsample_embedding(embedding, ratio)
+        if self.coreset_ratio.step is not None:
+            embedding = self.subsample_embedding(embedding, step="step")
+            is_first_batch and logger.info(f"First training batch coreset: {embedding.shape} ")
+
+        # Move embedding to cpu (possibly on other device)
+        embedding = embedding.cpu()
 
         # Add elements incrementally to the index
         if self.incremental_indexing:
-            self.model.index.add(embedding.cpu().numpy())
+            self.model.index.add(embedding.numpy())
 
         # Store the embedding for later indexing and training
-        self.embeddings.append(embedding.cpu())
+        self.embeddings.append(embedding)
 
     @torch.inference_mode()
     def fit(self) -> None:
@@ -193,20 +242,18 @@ class PatchDist(MemoryBankMixin, AnomalibModule):
         logger.info("Aggregating the embedding extracted from the training set.")
         embeddings = torch.vstack(self.embeddings)
 
-        if self.coreset_sampling_ratio_end is not None:
-            logger.info(f"Coreset sampling the embedding of size {embeddings.shape}.")
-            ratio = self.determine_coreset_ratio(self.coreset_sampling_ratio_end, embeddings)
-            embeddings = torch.as_tensor(embeddings, device=self.get_coreset_sampling_device("end"))
-            embeddings = self.subsample_embedding(embeddings, ratio)
+        if self.coreset_ratio.end is not None:
+            logger.info(f"Coreset sampling embedding of size: {embeddings.shape}")
+            embeddings = self.subsample_embedding(embeddings, step="end")
 
         # convert coreset sample to numpy
         embeddings = embeddings.cpu().numpy()
 
         if not self.incremental_indexing:
-            logger.info(f"Learning an index structure with embeddings {embeddings.shape}.")
+            logger.info(f"Learning an index structure with embeddings: {embeddings.shape}.")
             self.model.index.fit(embeddings)
 
-        logger.info(f"Learning an outlier detector with embeddings {embeddings.shape}.")
+        logger.info(f"Learning an outlier detector with embeddings: {embeddings.shape}.")
         self.model.detector.fit(embeddings, self.model.index)
 
     @torch.inference_mode()
@@ -228,10 +275,10 @@ class PatchDist(MemoryBankMixin, AnomalibModule):
         return batch.update(**predictions)
 
     def predict_step(
-        self,
-        batch: Batch,
-        batch_idx: int,
-        dataloader_idx: int = 0,
+            self,
+            batch: Batch,
+            batch_idx: int,
+            dataloader_idx: int = 0,
     ) -> STEP_OUTPUT:
         """Step function called during :meth:`~lightning.pytorch.trainer.Trainer.predict`.
 
@@ -251,27 +298,27 @@ class PatchDist(MemoryBankMixin, AnomalibModule):
 
     @classmethod
     def configure_pre_processor(
-        cls,
-        image_size: tuple[int, int] | None = None,
-        center_crop_size: tuple[int, int] | None = None,
+            cls,
+            image_size: tuple[int, int] | None = None,
+            center_crop_size: tuple[int, int] | None = None,
     ) -> PreProcessor:
-        """TODO(David): Check if the correct image size is given here
-        """
         image_size = image_size or (256, 256)
+        normalize_mean = [0.485, 0.456, 0.406]
+        normalize_std = [0.229, 0.224, 0.225]
         if center_crop_size is not None:
             # scale center crop size proportional to image size
             return PreProcessor(
                 transform=Compose([
                     Resize(image_size, antialias=True),
                     CenterCrop(center_crop_size),
-                    Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+                    Normalize(mean=normalize_mean, std=normalize_std),
                 ])
             )
 
         return PreProcessor(
             transform=Compose([
                 Resize(image_size, antialias=True),
-                Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
+                Normalize(mean=normalize_mean, std=normalize_std),
             ])
         )
 
@@ -299,28 +346,40 @@ class PatchDist(MemoryBankMixin, AnomalibModule):
         """
         return LearningType.ONE_CLASS
 
-    def subsample_embedding(self, embedding: torch.Tensor, sampling_ratio: float) -> torch.Tensor:
+    def subsample_embedding(
+            self,
+            embedding: torch.Tensor,
+            step: Literal["start", "step", "end"]
+    ) -> torch.Tensor:
         """Subsample embedding based on coreset sampling and store to memory.
-
-        Args:
-            embedding (np.ndarray): Embedding tensor from the CNN
-            sampling_ratio (float): Coreset sampling ratio
         """
-        if self.coreset_sampling_type == "kcenter":
-            sampler = KCenterGreedy(embedding=embedding, sampling_ratio=sampling_ratio)
-        elif self.coreset_sampling_type == "kmedoids":
-            sampler = KMedoids(embedding=embedding, sampling_ratio=sampling_ratio)
-        elif self.coreset_sampling_type == "random":
-            sampler = Random(embedding=embedding, sampling_ratio=sampling_ratio)
-        elif self.coreset_sampling_type == "uncertainty":
+        coreset_method = getattr(self.coreset_method, step)
+        coreset_ratio = getattr(self.coreset_ratio, step)
+        coreset_ratio = self.get_coreset_ratio(coreset_ratio, embedding=embedding)
+        coreset_device = getattr(self.coreset_device, step)
+        coreset_device = self.get_coreset_device(coreset_device)
+        embedding = torch.as_tensor(embedding, device=coreset_device)
+
+        if coreset_method == "kcenter":
+            hide_progress = step == "step" or (step == "start" and not self.coreset_aggregate_start)
+            sampler = KCenterGreedy(
+                embedding=embedding,
+                sampling_ratio=coreset_ratio,
+                progress=not hide_progress
+            )
+        elif coreset_method == "kmedoids":
+            sampler = KMedoids(embedding=embedding, sampling_ratio=coreset_ratio)
+        elif coreset_method == "random":
+            sampler = Random(embedding=embedding, sampling_ratio=coreset_ratio)
+        elif coreset_method == "uncertainty":
             sampler = Uncertainty(
                 embedding=embedding,
-                sampling_ratio=sampling_ratio,
+                sampling_ratio=coreset_ratio,
                 detector=self.model.detector,
                 index=self.model.index
             )
         else:
-            raise AssertionError(f"Coreset sampling type {self.coreset_sampling_type} does not exist.")
+            raise AssertionError(f"Coreset sampling method {coreset_method} does not exist.")
 
         coreset = sampler.sample_coreset()
         return coreset
