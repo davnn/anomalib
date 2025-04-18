@@ -20,5 +20,6 @@ Example:
 # SPDX-License-Identifier: Apache-2.0
 
 from .post_processor import PostProcessor
+from .wrapper_processor import WrapperPostProcessor
 
-__all__ = ["PostProcessor"]
+__all__ = ["PostProcessor", "WrapperPostProcessor"]
