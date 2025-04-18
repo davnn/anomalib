@@ -3,6 +3,7 @@ datasets
 !src/anomalib/data/datasets
 pre_trained
 results
+notebooks/
 
 # Test-related files and directories
 tmp*
